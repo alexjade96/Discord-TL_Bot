@@ -120,5 +120,7 @@ async def on_message(message):
 
 # Token loaded from DISCORD_BOT_TOKEN in .env or environment
 bot_token = os.getenv("DISCORD_BOT_TOKEN")
+if not bot_token:
+    raise RuntimeError("DISCORD_BOT_TOKEN is not set. Add it to your .env file.")
 
 client.run(bot_token, log_handler=None)
