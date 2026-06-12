@@ -1,13 +1,26 @@
 # TL-Bot.py
 # Discord bot for handling image/text translations
 
+import asyncio
 import os
+import sys
 import datetime
 from pathlib import Path
 
 import discord
 import logging
 import logging.handlers
+
+# Load .env file if python-dotenv is installed
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# Add text translation package to path
+sys.path.insert(0, str(Path(__file__).parent / "Translation" / "2-Text"))
+from translate import translate_text
 
 # Logging handler setup
 logger = logging.getLogger("discord")
@@ -88,14 +101,24 @@ async def on_message(message):
                         )
             elif msg.startswith("/translate") and message.content.strip() != "":
                 text_to_translate = msg.replace("/translate", "").strip()
-                await message.channel.send(f"Received text to translate: {text_to_translate}")
-                # Here you would add the translation logic
+                if not text_to_translate:
+                    await message.channel.send("Please provide text after `/translate`.")
+                else:
+                    status = await message.channel.send("Translating...")
+                    try:
+                        result = await asyncio.to_thread(translate_text, text_to_translate)
+                        lang = result["source_language"]
+                        translated = result["translated_text"]
+                        await status.edit(content=f"**[{lang} → en]** {translated}")
+                    except Exception as e:
+                        logger.error(f"Translation error: {e}")
+                        await status.edit(content="Translation failed. Make sure `HF_TOKEN` is set in your `.env` file.")
             else:
                 await message.channel.send(
                     "Translate function not yet implemented, please stay tuned!"
                 )
 
-# https://discord.com/developers/applications/
-bot_token = "MTUwMjAzNjkwMjkwMjEwNDIwNA.GPh57a.T4NmRkyx-B8QAqCTml6Ud4LboDvqSteRSm5S34"
+# Token loaded from DISCORD_BOT_TOKEN in .env or environment
+bot_token = os.getenv("DISCORD_BOT_TOKEN")
 
 client.run(bot_token, log_handler=None)
