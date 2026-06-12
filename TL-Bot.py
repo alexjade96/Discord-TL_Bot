@@ -12,11 +12,8 @@ import logging
 import logging.handlers
 
 # Load .env file if python-dotenv is installed
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+from dotenv import load_dotenv
+load_dotenv()
 
 # Add text translation package to path
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "2-Text"))
@@ -76,7 +73,7 @@ async def on_message(message):
                 await message.channel.send(
                     "Available commands:\n/help - Show this help message\n/hello - Greet the bot\n/test - Test the bot\n/translate - Translate text or image"
                 )
-            if msg.startswith("/translate") and message.attachments:
+            elif msg.startswith("/translate") and message.attachments:
                 for attachment in message.attachments:
                     if 'image' in attachment.content_type:
                         image_url = attachment.url
