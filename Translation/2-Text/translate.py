@@ -15,11 +15,8 @@ import os
 from huggingface_hub import InferenceClient
 
 from detect import detect_language, is_english
-from utils import get_mbart_code
 
-MBART_MODEL = "facebook/mbart-large-50-many-to-many-mmt"
 QWEN_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
-TARGET_MBART = "en_XX"
 
 
 def _client() -> InferenceClient:
@@ -29,23 +26,8 @@ def _client() -> InferenceClient:
     return InferenceClient(provider="hf-inference", api_key=token)
 
 
-def translate_with_mbart(text: str, src_mbart_code: str, client: InferenceClient | None = None) -> str:
-    """Translate text to English using mBART-50 (supports 50 languages)."""
-    c = client or _client()
-    result = c.translation(
-        text,
-        model=MBART_MODEL,
-        src_lang=src_mbart_code,
-        tgt_lang=TARGET_MBART,
-    )
-    return result.translation_text
-
-
 def translate_with_qwen(text: str, client: InferenceClient | None = None) -> str:
-    """Translate text to English via Qwen instruction prompting.
-
-    Used as fallback when the source language is not in mBART-50's supported set.
-    """
+    """Translate text to English via Qwen instruction prompting."""
     c = client or _client()
     prompt = (
         "Translate the following text to English. "
@@ -67,7 +49,7 @@ def translate_text(text: str, src_lang: str | None = None) -> dict:
         dict with keys:
             translated_text  — English output
             source_language  — detected or provided langdetect code
-            method           — 'passthrough' | 'mbart' | 'qwen' | 'none'
+            method           — 'passthrough' | 'qwen' | 'none'
     """
     if not text.strip():
         return {"translated_text": text, "source_language": "unknown", "method": "none"}
@@ -77,14 +59,7 @@ def translate_text(text: str, src_lang: str | None = None) -> dict:
     if detected == "en" or (not src_lang and is_english(text)):
         return {"translated_text": text, "source_language": "en", "method": "passthrough"}
 
-    mbart_code = get_mbart_code(detected)
-    c = _client()
-
-    if mbart_code:
-        translated = translate_with_mbart(text, mbart_code, c)
-        return {"translated_text": translated, "source_language": detected, "method": "mbart"}
-
-    translated = translate_with_qwen(text, c)
+    translated = translate_with_qwen(text, _client())
     return {"translated_text": translated, "source_language": detected, "method": "qwen"}
 
 

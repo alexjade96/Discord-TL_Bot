@@ -109,7 +109,7 @@ async def on_message(message):
                         await status.edit(content=f"**[{lang} → en]** {translated}")
                     except Exception as e:
                         logger.error(f"Translation error: {e}")
-                        await status.edit(content="Translation failed. Make sure `HF_TOKEN` is set in your `.env` file.")
+                        await status.edit(content="Translation failed. Please try again later.")
             else:
                 await message.channel.send(
                     "Translate function not yet implemented, please stay tuned!"
