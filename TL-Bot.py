@@ -108,7 +108,7 @@ async def on_message(message):
                         translated = result["translated_text"]
                         await status.edit(content=f"**[{lang} → en]** {translated}")
                     except Exception as e:
-                        logger.error(f"Translation error: {e}")
+                        logger.exception(f"Translation error: {e}")
                         await status.edit(content="Translation failed. Please try again later.")
             else:
                 await message.channel.send(
