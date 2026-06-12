@@ -59,8 +59,13 @@ def detect_language_segments(text: str) -> list[dict]:
 
 
 def is_english(text: str) -> bool:
-    """Return True if the entire text is detected as English."""
-    return detect_language(text) == "en"
+    """Return True if lingua detects the text as English.
+
+    Uses lingua rather than langdetect because langdetect misidentifies common
+    short English phrases even with a fixed seed.
+    """
+    result = _get_detector().detect_language_of(text)
+    return result == Language.ENGLISH
 
 
 def dominant_language(text: str) -> str:
