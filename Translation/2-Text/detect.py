@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from langdetect import detect, detect_langs, LangDetectException
+from langdetect import detect, detect_langs, LangDetectException, DetectorFactory
 from lingua import Language, LanguageDetectorBuilder
+
+DetectorFactory.seed = 0  # make langdetect deterministic across runs
 
 from utils import get_mbart_code
 
