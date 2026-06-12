@@ -7,22 +7,14 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from translate import translate_text, translate_with_qwen
+from translate import translate_text, translate_to_english
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _mock_client(generation_text="generated output"):
+def _mock_client(translation_text="translated output"):
     client = MagicMock()
-    client.text_generation.return_value = generation_text
+    client.translation.return_value = MagicMock(translation_text=translation_text)
     return client
 
-
-# ---------------------------------------------------------------------------
-# translate_text
-# ---------------------------------------------------------------------------
 
 class TestTranslateText:
     def test_empty_string_returns_none_method(self):
@@ -45,20 +37,21 @@ class TestTranslateText:
         assert result["method"] == "passthrough"
 
     @patch("translate._client")
-    def test_russian_uses_qwen(self, mock_client_fn):
+    def test_non_english_uses_opus_mt(self, mock_client_fn):
         mock_client_fn.return_value = _mock_client("My name is Wolfgang")
         result = translate_text("Меня зовут Вольфганг", src_lang="ru")
-        assert result["method"] == "qwen"
+        assert result["method"] == "opus-mt"
         assert result["source_language"] == "ru"
         assert result["translated_text"] == "My name is Wolfgang"
 
     @patch("translate._client")
-    def test_non_english_uses_qwen(self, mock_client_fn):
+    def test_calls_translation_api(self, mock_client_fn):
         client = _mock_client("Good morning")
         mock_client_fn.return_value = client
-        result = translate_text("早上好", src_lang="zh-cn")
-        assert result["method"] == "qwen"
-        client.text_generation.assert_called_once()
+        translate_text("早上好", src_lang="zh-cn")
+        client.translation.assert_called_once_with(
+            "早上好", model="Helsinki-NLP/opus-mt-mul-en"
+        )
 
     @patch("translate._client")
     def test_result_keys_present(self, mock_client_fn):
@@ -69,19 +62,16 @@ class TestTranslateText:
         assert "method" in result
 
 
-# ---------------------------------------------------------------------------
-# translate_with_qwen (unit)
-# ---------------------------------------------------------------------------
+class TestTranslateToEnglish:
+    def test_calls_client_translation(self):
+        client = _mock_client("hello world")
+        result = translate_to_english("hola mundo", client)
+        client.translation.assert_called_once_with(
+            "hola mundo", model="Helsinki-NLP/opus-mt-mul-en"
+        )
+        assert result == "hello world"
 
-class TestTranslateWithQwen:
-    def test_calls_text_generation(self):
-        client = _mock_client(generation_text="  translated  ")
-        result = translate_with_qwen("hola", client)
-        client.text_generation.assert_called_once()
-        assert result == "translated"  # leading/trailing whitespace stripped
-
-    def test_prompt_contains_input_text(self):
-        client = _mock_client(generation_text="out")
-        translate_with_qwen("unique_input_string_xyz", client)
-        prompt_arg = client.text_generation.call_args[0][0]
-        assert "unique_input_string_xyz" in prompt_arg
+    def test_returns_string(self):
+        client = _mock_client("good evening")
+        result = translate_to_english("buenas noches", client)
+        assert result == "good evening"

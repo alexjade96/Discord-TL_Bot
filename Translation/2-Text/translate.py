@@ -16,7 +16,8 @@ from huggingface_hub import InferenceClient
 
 from detect import detect_language, is_english
 
-QWEN_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+# Multilingual → English translation model supported by hf-inference free tier
+TRANSLATE_MODEL = "Helsinki-NLP/opus-mt-mul-en"
 
 
 def _client() -> InferenceClient:
@@ -26,15 +27,11 @@ def _client() -> InferenceClient:
     return InferenceClient(provider="hf-inference", api_key=token)
 
 
-def translate_with_qwen(text: str, client: InferenceClient | None = None) -> str:
-    """Translate text to English via Qwen instruction prompting."""
+def translate_to_english(text: str, client: InferenceClient | None = None) -> str:
+    """Translate text to English using Helsinki-NLP/opus-mt-mul-en."""
     c = client or _client()
-    prompt = (
-        "Translate the following text to English. "
-        "Reply with only the translation, no explanation:\n\n"
-        f"{text}"
-    )
-    return c.text_generation(prompt, model=QWEN_MODEL, max_new_tokens=512).strip()
+    result = c.translation(text, model=TRANSLATE_MODEL)
+    return result.translation_text
 
 
 def translate_text(text: str, src_lang: str | None = None) -> dict:
@@ -49,7 +46,7 @@ def translate_text(text: str, src_lang: str | None = None) -> dict:
         dict with keys:
             translated_text  — English output
             source_language  — detected or provided langdetect code
-            method           — 'passthrough' | 'qwen' | 'none'
+            method           — 'passthrough' | 'opus-mt' | 'none'
     """
     if not text.strip():
         return {"translated_text": text, "source_language": "unknown", "method": "none"}
@@ -59,8 +56,8 @@ def translate_text(text: str, src_lang: str | None = None) -> dict:
     if detected == "en" or (not src_lang and is_english(text)):
         return {"translated_text": text, "source_language": "en", "method": "passthrough"}
 
-    translated = translate_with_qwen(text, _client())
-    return {"translated_text": translated, "source_language": detected, "method": "qwen"}
+    translated = translate_to_english(text, _client())
+    return {"translated_text": translated, "source_language": detected, "method": "opus-mt"}
 
 
 if __name__ == "__main__":
