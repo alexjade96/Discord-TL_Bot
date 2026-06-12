@@ -75,3 +75,18 @@ def dominant_language(text: str) -> str:
         return langs[0].lang if langs else "unknown"
     except LangDetectException:
         return "unknown"
+
+
+def detect_language_with_confidence(text: str) -> tuple[str, float]:
+    """Return (langdetect_code, confidence) for the most probable language.
+
+    Confidence is a float in [0, 1] from langdetect's probability score.
+    Returns ('unknown', 0.0) when detection fails.
+    """
+    try:
+        langs = detect_langs(text)
+        if langs:
+            return langs[0].lang, round(langs[0].prob, 4)
+        return "unknown", 0.0
+    except LangDetectException:
+        return "unknown", 0.0

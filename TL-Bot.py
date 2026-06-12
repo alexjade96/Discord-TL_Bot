@@ -107,7 +107,9 @@ async def on_message(message):
                         result = await asyncio.to_thread(translate_text, text_to_translate)
                         lang_name = get_language_name(result["source_language"])
                         translated = result["translated_text"]
-                        await status.edit(content=f"**[{lang_name} → English]** {translated}")
+                        confidence = result.get("confidence")
+                        conf_str = f" ({confidence * 100:.0f}%)" if confidence is not None else ""
+                        await status.edit(content=f"**[{lang_name} → English]{conf_str}** {translated}")
                     except Exception as e:
                         logger.exception(f"Translation error: {e}")
                         await status.edit(content="Translation failed. Please try again later.")

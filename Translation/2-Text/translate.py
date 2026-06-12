@@ -14,7 +14,7 @@ import os
 
 from huggingface_hub import InferenceClient
 
-from detect import detect_language, is_english
+from detect import detect_language, detect_language_with_confidence, is_english
 
 # Multilingual → English translation model supported by hf-inference free tier
 TRANSLATE_MODEL = "Helsinki-NLP/opus-mt-mul-en"
@@ -46,18 +46,22 @@ def translate_text(text: str, src_lang: str | None = None) -> dict:
         dict with keys:
             translated_text  — English output
             source_language  — detected or provided langdetect code
+            confidence       — detection confidence as float in [0, 1], or None if src_lang was provided
             method           — 'passthrough' | 'opus-mt' | 'none'
     """
     if not text.strip():
-        return {"translated_text": text, "source_language": "unknown", "method": "none"}
+        return {"translated_text": text, "source_language": "unknown", "confidence": None, "method": "none"}
 
-    detected = src_lang or detect_language(text)
+    if src_lang:
+        detected, confidence = src_lang, None
+    else:
+        detected, confidence = detect_language_with_confidence(text)
 
     if detected == "en" or (not src_lang and is_english(text)):
-        return {"translated_text": text, "source_language": "en", "method": "passthrough"}
+        return {"translated_text": text, "source_language": "en", "confidence": confidence, "method": "passthrough"}
 
     translated = translate_to_english(text, _client())
-    return {"translated_text": translated, "source_language": detected, "method": "opus-mt"}
+    return {"translated_text": translated, "source_language": detected, "confidence": confidence, "method": "opus-mt"}
 
 
 if __name__ == "__main__":
