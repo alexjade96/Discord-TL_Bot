@@ -1,4 +1,4 @@
-"""Tests for translate.py — HuggingFace API calls are mocked."""
+"""Tests for translate_text.py — HuggingFace API calls are mocked."""
 
 import sys
 import os
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from translate import translate_text, translate_to_english
+from translate_text import translate_text, translate_to_english
 
 
 def _mock_client(translation_text="translated output"):
@@ -36,7 +36,7 @@ class TestTranslateText:
         result = translate_text("Bonjour", src_lang="en")
         assert result["method"] == "passthrough"
 
-    @patch("translate._client")
+    @patch("translate_text._client")
     def test_non_english_uses_opus_mt(self, mock_client_fn):
         mock_client_fn.return_value = _mock_client("My name is Wolfgang")
         result = translate_text("Меня зовут Вольфганг", src_lang="ru")
@@ -44,7 +44,7 @@ class TestTranslateText:
         assert result["source_language"] == "ru"
         assert result["translated_text"] == "My name is Wolfgang"
 
-    @patch("translate._client")
+    @patch("translate_text._client")
     def test_calls_translation_api(self, mock_client_fn):
         client = _mock_client("Good morning")
         mock_client_fn.return_value = client
@@ -53,7 +53,7 @@ class TestTranslateText:
             "早上好", model="Helsinki-NLP/opus-mt-mul-en"
         )
 
-    @patch("translate._client")
+    @patch("translate_text._client")
     def test_result_keys_present(self, mock_client_fn):
         mock_client_fn.return_value = _mock_client("translated")
         result = translate_text("Bonjour le monde", src_lang="fr")

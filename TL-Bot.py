@@ -17,7 +17,7 @@ load_dotenv()
 
 # Add text translation package to path
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "2-Text"))
-from translate import translate_text
+from translate_text import translate_text
 from utils import get_language_name  # noqa: E402
 
 # Logging handler setup

@@ -1,4 +1,4 @@
-"""Tests for translate.py — OCR and text translation are mocked."""
+"""Tests for translate_image.py — OCR and text translation are mocked."""
 
 import sys
 from pathlib import Path
@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "2-Text"))
 
-from translate import translate_image
+from translate_image import translate_image
 
 
 # ---------------------------------------------------------------------------
@@ -35,8 +35,8 @@ def _text_result(src_lang="es", translated="hello", confidence=0.99):
 # ---------------------------------------------------------------------------
 
 class TestTranslateImage:
-    @patch("translate.translate_text")
-    @patch("translate.extract_text_combined")
+    @patch("translate_image.translate_text")
+    @patch("translate_image.extract_text_combined")
     def test_full_pipeline_returns_expected_keys(self, mock_ocr, mock_translate):
         mock_ocr.return_value = ("hola mundo", 0.95)
         mock_translate.return_value = _text_result("es", "hello world", 0.99)
@@ -50,8 +50,8 @@ class TestTranslateImage:
         assert "ocr_confidence" in result
         assert "method" in result
 
-    @patch("translate.translate_text")
-    @patch("translate.extract_text_combined")
+    @patch("translate_image.translate_text")
+    @patch("translate_image.extract_text_combined")
     def test_ocr_confidence_propagated(self, mock_ocr, mock_translate):
         mock_ocr.return_value = ("早上好", 0.91)
         mock_translate.return_value = _text_result("zh-cn", "Good morning", 1.0)
@@ -59,8 +59,8 @@ class TestTranslateImage:
         result = translate_image(_blank_image())
         assert result["ocr_confidence"] == 0.91
 
-    @patch("translate.translate_text")
-    @patch("translate.extract_text_combined")
+    @patch("translate_image.translate_text")
+    @patch("translate_image.extract_text_combined")
     def test_original_text_preserved(self, mock_ocr, mock_translate):
         mock_ocr.return_value = ("buenos noches", 0.88)
         mock_translate.return_value = _text_result("es", "good evening", 0.97)
@@ -69,7 +69,7 @@ class TestTranslateImage:
         assert result["original_text"] == "buenos noches"
         assert result["translated_text"] == "good evening"
 
-    @patch("translate.extract_text_combined")
+    @patch("translate_image.extract_text_combined")
     def test_empty_ocr_returns_none_method(self, mock_ocr):
         mock_ocr.return_value = ("", 0.0)
 
@@ -79,8 +79,8 @@ class TestTranslateImage:
         assert result["translated_text"] == ""
         assert result["ocr_confidence"] == 0.0
 
-    @patch("translate.translate_text")
-    @patch("translate.extract_text_combined")
+    @patch("translate_image.translate_text")
+    @patch("translate_image.extract_text_combined")
     def test_src_lang_forwarded_to_translate(self, mock_ocr, mock_translate):
         mock_ocr.return_value = ("konnichiwa", 0.80)
         mock_translate.return_value = _text_result("ja", "hello", 0.75)
@@ -88,8 +88,8 @@ class TestTranslateImage:
         translate_image(_blank_image(), src_lang="ja")
         mock_translate.assert_called_once_with("konnichiwa", src_lang="ja")
 
-    @patch("translate.translate_text")
-    @patch("translate.extract_text_combined")
+    @patch("translate_image.translate_text")
+    @patch("translate_image.extract_text_combined")
     def test_english_passthrough_method(self, mock_ocr, mock_translate):
         mock_ocr.return_value = ("hello world", 0.99)
         mock_translate.return_value = {

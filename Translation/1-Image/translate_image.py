@@ -1,8 +1,8 @@
 """Full image translation pipeline: load image → OCR → detect language → translate.
 
 Usage (CLI):
-    python translate.py test_image_4.png
-    python translate.py https://cdn.discordapp.com/.../image.png
+    python translate_image.py test_image_4.png
+    python translate_image.py https://cdn.discordapp.com/.../image.png
 
 Environment:
     HF_TOKEN — HuggingFace Inference API token (required for translation)
@@ -17,7 +17,7 @@ import numpy as np
 
 # Pull in the text translation pipeline from the sibling package
 sys.path.insert(0, str(Path(__file__).parent.parent / "2-Text"))
-from translate import translate_text  # noqa: E402
+from translate_text import translate_text  # noqa: E402
 
 from ocr import extract_text_combined
 
