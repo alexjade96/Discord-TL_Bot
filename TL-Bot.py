@@ -18,6 +18,7 @@ load_dotenv()
 # Add text translation package to path
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "2-Text"))
 from translate import translate_text
+from utils import get_language_name  # noqa: E402
 
 # Logging handler setup
 logger = logging.getLogger("discord")
@@ -104,9 +105,9 @@ async def on_message(message):
                     status = await message.channel.send("Translating...")
                     try:
                         result = await asyncio.to_thread(translate_text, text_to_translate)
-                        lang = result["source_language"]
+                        lang_name = get_language_name(result["source_language"])
                         translated = result["translated_text"]
-                        await status.edit(content=f"**[{lang} → en]** {translated}")
+                        await status.edit(content=f"**[{lang_name} → English]** {translated}")
                     except Exception as e:
                         logger.exception(f"Translation error: {e}")
                         await status.edit(content="Translation failed. Please try again later.")
