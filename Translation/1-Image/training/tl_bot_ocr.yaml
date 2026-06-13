@@ -1,0 +1,19 @@
+# EasyOCR custom model config — None-VGG-BiLSTM-CTC architecture
+# Place this file (and tl_bot_ocr.py) in ~/.EasyOCR/user_network/
+# Place tl_bot_ocr.pth in ~/.EasyOCR/model/
+# Then load with: easyocr.Reader(['en'], recog_network='tl_bot_ocr')
+
+character: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ "
+
+# Image dimensions fed into the recognition network
+imgH: 32
+imgW: 100
+
+# Input channel: 1 = grayscale (matches our preprocess() step)
+input_channel: 1
+
+# VGG feature extractor output channels
+output_channel: 256
+
+# BiLSTM hidden size
+hidden_size: 256

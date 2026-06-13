@@ -1,11 +1,18 @@
-"""Full image translation pipeline: load image → OCR → detect language → translate.
+"""Full image translation pipeline: load image -> OCR -> detect language -> translate.
+
+When a language hint is supplied, the pipeline runs two passes:
+  - Auto pass:  best-confidence reader selected automatically
+  - Hint pass:  reader targeting the hinted language script
+Both are translated and scored by ocr_confidence * lang_confidence.
+The higher-scoring result is returned, with hint_used flagged in the dict.
 
 Usage (CLI):
     python translate_image.py test_image_4.png
-    python translate_image.py https://cdn.discordapp.com/.../image.png
+    python translate_image.py image.png --src ja
+    python translate_image.py image.png --hint chinese
 
 Environment:
-    HF_TOKEN — HuggingFace Inference API token (required for translation)
+    HF_TOKEN -- HuggingFace Inference API token (required for translation)
 """
 
 from __future__ import annotations
@@ -19,32 +26,54 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "2-Text"))
 from translate_text import translate_text  # noqa: E402
 
-from ocr import extract_text_combined
+sys.path.insert(0, str(Path(__file__).parent.parent / "2-Text"))
+from detect import confidence_for_language  # noqa: E402
+
+from ocr import (
+    extract_text_combined,
+    extract_text_hinted,
+    load_image_from_url,
+    load_image_from_path,
+    preprocess,
+)
+from collect import save_submission
+
+_READ_KWARGS = dict(
+    width_ths=1e4,
+    add_margin=0.1,
+    low_text=0.1,
+    text_threshold=0.8,
+    paragraph=False,
+)
 
 
-def translate_image(
-    source: str | Path | np.ndarray,
-    src_lang: str | None = None,
+def _combined_score(ocr_conf: float, lang_conf: float) -> float:
+    """Score a pass as ocr_confidence * language_confidence."""
+    return ocr_conf * lang_conf
+
+
+def _run_pass(
+    raw_image: np.ndarray,
+    processed: np.ndarray,
+    src_lang: str | None,
+    hint_lang: str | None,
+    tgt_lang: str | None = None,
 ) -> dict:
-    """Extract text from an image and translate it to English.
+    """Run OCR (with optional hint-specific reader) then translate.
 
-    Args:
-        source:   Discord attachment URL, local file path, or BGR numpy array.
-        src_lang: Optional langdetect source language code override (e.g. 'ja').
-                  Detected automatically when omitted.
-
-    Returns:
-        dict with keys:
-            original_text   — raw OCR output (empty string if no text found)
-            translated_text — English translation
-            source_language — detected or provided langdetect code
-            confidence      — language detection confidence [0, 1], or None
-            ocr_confidence  — average EasyOCR confidence across all segments [0, 1]
-            method          — 'none' | 'passthrough' | 'opus-mt'
+    Returns the full result dict plus ocr_confidence and score.
     """
-    original_text, ocr_confidence = extract_text_combined(source)
+    if hint_lang:
+        segments = extract_text_hinted(processed, hint_lang, _READ_KWARGS)
+        if segments:
+            ocr_text = " ".join(s["text"] for s in segments)
+            ocr_conf = round(sum(s["confidence"] for s in segments) / len(segments), 4)
+        else:
+            ocr_text, ocr_conf = "", 0.0
+    else:
+        ocr_text, ocr_conf = extract_text_combined(raw_image)
 
-    if not original_text:
+    if not ocr_text:
         return {
             "original_text": "",
             "translated_text": "",
@@ -52,18 +81,95 @@ def translate_image(
             "confidence": None,
             "ocr_confidence": 0.0,
             "method": "none",
+            "_score": 0.0,
         }
 
-    result = translate_text(original_text, src_lang=src_lang)
+    result = translate_text(ocr_text, src_lang=src_lang, tgt_lang=tgt_lang)
+    lang_conf = result.get("confidence")
+
+    if hint_lang is not None:
+        # Replace the None confidence (no detection was run) with langdetect's
+        # actual probability for the hinted language in the detected candidates.
+        # Falls back to 0.0 if langdetect didn't consider it at all.
+        lang_conf = confidence_for_language(ocr_text, hint_lang)
+
+    score = _combined_score(ocr_conf, lang_conf or 0.0)
 
     return {
-        "original_text": original_text,
+        "original_text": ocr_text,
         "translated_text": result["translated_text"],
         "source_language": result["source_language"],
-        "confidence": result["confidence"],
-        "ocr_confidence": ocr_confidence,
+        "confidence": lang_conf,
+        "ocr_confidence": ocr_conf,
         "method": result["method"],
+        "_score": score,
     }
+
+
+def translate_image(
+    source: str | Path | np.ndarray,
+    src_lang: str | None = None,
+    hint_lang: str | None = None,
+    tgt_lang: str | None = None,
+) -> dict:
+    """Extract text from an image and translate it to English.
+
+    When hint_lang is provided, both an auto-detect pass and a hint-targeted
+    pass are run. Both results are returned together so the caller can present
+    them side-by-side for comparison.
+
+    Args:
+        source:    Discord attachment URL, local file path, or BGR numpy array.
+        src_lang:  Hard override for the source language code (skips detection).
+        hint_lang: User-suggested langdetect code (e.g. 'zh-cn', 'ja', 'ko').
+                   Triggers a second hinted pass alongside the auto pass.
+
+    Returns:
+        dict with keys:
+            auto  -- result dict from the auto-detect pass (always present)
+            hint  -- result dict from the hinted pass, or None if no hint given
+
+        Each result dict contains:
+            original_text   -- raw OCR output
+            translated_text -- English translation
+            source_language -- detected or provided langdetect code
+            confidence      -- language detection confidence [0, 1], or None
+            ocr_confidence  -- average EasyOCR confidence [0, 1]
+            method          -- 'none' | 'passthrough' | 'opus-mt' | 'opus-mt-segmented'
+            score           -- combined confidence (ocr_conf * lang_conf)
+    """
+    if isinstance(source, np.ndarray):
+        raw_image = source
+    elif isinstance(source, str) and source.startswith(("http://", "https://")):
+        raw_image = load_image_from_url(source)
+    else:
+        raw_image = load_image_from_path(source)
+
+    processed = preprocess(raw_image)
+
+    auto = _run_pass(raw_image, processed, src_lang=src_lang, hint_lang=None, tgt_lang=tgt_lang)
+    auto["score"] = auto.pop("_score")
+
+    hint = None
+    if hint_lang and hint_lang != src_lang:
+        hint = _run_pass(raw_image, processed, src_lang=hint_lang, hint_lang=hint_lang, tgt_lang=tgt_lang)
+        hint["score"] = hint.pop("_score")
+    else:
+        auto.pop("_score", None)
+
+    # Save the auto pass to the training dataset (non-fatal)
+    try:
+        save_submission(
+            raw_image,
+            ocr_text=auto["original_text"],
+            source_language=auto["source_language"],
+            confidence=auto["confidence"],
+            ocr_confidence=auto["ocr_confidence"],
+        )
+    except Exception:
+        pass
+
+    return {"auto": auto, "hint": hint}
 
 
 if __name__ == "__main__":
@@ -71,11 +177,13 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Translate text in an image to English.")
     parser.add_argument("source", help="Image file path or URL")
-    parser.add_argument("--src", default=None, help="Source language code (e.g. ja, zh-cn)")
+    parser.add_argument("--src", default=None, help="Hard source language override (e.g. ja)")
+    parser.add_argument("--hint", default=None, help="Language hint code (triggers dual-pass)")
     args = parser.parse_args()
 
-    result = translate_image(args.source, src_lang=args.src)
+    result = translate_image(args.source, src_lang=args.src, hint_lang=args.hint)
     print(f"OCR:         {result['original_text']}")
     print(f"OCR conf:    {result['ocr_confidence'] * 100:.1f}%")
-    print(f"Language:    {result['source_language']} (detection: {result['confidence']})")
+    print(f"Language:    {result['source_language']} (conf: {result['confidence']})")
     print(f"Translation: {result['translated_text']}")
+    print(f"Method:      {result['method']}  |  hint_used: {result['hint_used']}")

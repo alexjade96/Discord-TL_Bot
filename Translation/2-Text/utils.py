@@ -142,3 +142,58 @@ def get_mbart_code(langdetect_code: str) -> str | None:
 def get_language_name(langdetect_code: str) -> str:
     """Return the full language name for a langdetect code, e.g. 'pt' → 'Portuguese'."""
     return LANGDETECT_TO_NAME.get(langdetect_code.lower(), langdetect_code.upper())
+
+
+# Maps user-supplied /lang hints (names, aliases, native names, codes) to
+# langdetect-style codes used throughout the pipeline.
+_HINT_ALIASES: dict[str, str] = {
+    # Chinese
+    "chinese": "zh-cn", "chinese simplified": "zh-cn", "simplified chinese": "zh-cn",
+    "mandarin": "zh-cn", "putonghua": "zh-cn", "zh": "zh-cn", "zh-cn": "zh-cn",
+    "chinese traditional": "zh-tw", "traditional chinese": "zh-tw",
+    "cantonese": "zh-tw", "zh-tw": "zh-tw",
+    # Japanese
+    "japanese": "ja", "nihongo": "ja", "jp": "ja", "ja": "ja",
+    # Korean
+    "korean": "ko", "hangul": "ko", "kr": "ko", "ko": "ko",
+    # Common European
+    "russian": "ru", "ru": "ru",
+    "spanish": "es", "espanol": "es", "es": "es",
+    "french": "fr", "francais": "fr", "fr": "fr",
+    "german": "de", "deutsch": "de", "de": "de",
+    "portuguese": "pt", "pt": "pt",
+    "italian": "it", "italiano": "it", "it": "it",
+    "dutch": "nl", "nl": "nl",
+    "polish": "pl", "pl": "pl",
+    "ukrainian": "uk", "uk": "uk",
+    "arabic": "ar", "ar": "ar",
+    "turkish": "tr", "tr": "tr",
+    "thai": "th", "th": "th",
+    "vietnamese": "vi", "vi": "vi",
+    "hindi": "hi", "hi": "hi",
+    "indonesian": "id", "id": "id",
+    "swedish": "sv", "sv": "sv",
+    "danish": "da", "da": "da",
+    "norwegian": "no", "no": "no",
+    "finnish": "fi", "fi": "fi",
+    "greek": "el", "el": "el",
+    "hebrew": "he", "he": "he",
+    "romanian": "ro", "ro": "ro",
+    "czech": "cs", "cs": "cs",
+    "hungarian": "hu", "hu": "hu",
+    "english": "en", "en": "en",
+}
+
+
+def parse_language_hint(name: str) -> str | None:
+    """Convert a user-supplied language name or code to a langdetect code.
+
+    Returns None if the name is not recognised.
+
+    Examples:
+        'chinese'  -> 'zh-cn'
+        'Japanese' -> 'ja'
+        'ko'       -> 'ko'
+        'gibberish' -> None
+    """
+    return _HINT_ALIASES.get(name.lower().strip())

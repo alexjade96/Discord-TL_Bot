@@ -162,9 +162,13 @@ data/
 font_data/
 font-dataset/
 windows-fonts/
+demo_output/
 
 # PyTorch Model Checkpoint files
 checkpoints/
+
+# EasyOCR training artefacts
+Translation/1-Image/training/lmdb_*/
 
 # Spyder project settings
 .spyderproject
