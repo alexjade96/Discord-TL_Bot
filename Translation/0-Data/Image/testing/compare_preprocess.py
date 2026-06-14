@@ -1,8 +1,8 @@
-"""Preprocessing comparison: baseline vs enhanced (tuned) vs discord-aware.
+"""Preprocessing comparison: baseline vs enhanced vs discord-aware vs experimental.
 
-Runs all three preprocess variants on every image in data/images/, OCRs each
+Runs all preprocessing variants on every image in 0-Data/Image/data/, OCRs each
 with the zh reader, and prints a side-by-side confidence/text report. Saves
-all preprocessed images to data/preprocess_comparison/ for visual inspection.
+processed images to 0-Data/Image/data/preprocess_comparison/ for visual inspection.
 
 Usage:
     python compare_preprocess.py
@@ -12,19 +12,29 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 from pathlib import Path
+
+# Force UTF-8 so CJK characters print correctly on Windows consoles
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 import cv2
 import numpy as np
 
 HERE = Path(__file__).parent
-sys.path.insert(0, str(HERE))
+
+# ocr.py lives in Translation/1-Image/ — three levels up from testing/
+sys.path.insert(0, str(HERE.parent.parent.parent / "1-Image"))
 
 from ocr import (
     preprocess,
     preprocess_enhanced,
     preprocess_discord,
+    preprocess_otsu,
+    preprocess_light_denoise,
+    preprocess_bilateral,
     load_image_from_path,
     _get_reader_zh,
     _split_merged_words,
@@ -39,9 +49,12 @@ READ_KWARGS = dict(
 )
 
 VARIANTS: list[tuple[str, object]] = [
-    ("baseline", preprocess),
-    ("enhanced", preprocess_enhanced),
-    ("discord",  preprocess_discord),
+    ("baseline",      preprocess),
+    ("enhanced",      preprocess_enhanced),
+    ("discord",       preprocess_discord),
+    ("otsu",          preprocess_otsu),
+    ("light_denoise", preprocess_light_denoise),
+    ("bilateral",     preprocess_bilateral),
 ]
 
 
@@ -75,8 +88,7 @@ def compare_image(path: Path, out_dir: Path) -> None:
         segs, avg = _run_ocr(processed)
         results[name] = (segs, avg, processed)
 
-    # Header row
-    col = 22
+    col = 16
     print(f"\n  {'':12s}", end="")
     for name, _ in VARIANTS:
         print(f"  {name.upper():<{col}}", end="")
@@ -87,21 +99,18 @@ def compare_image(path: Path, out_dir: Path) -> None:
         print(f"  {'-'*col}", end="")
     print()
 
-    # Confidence row
     print(f"  {'Avg conf':<12s}", end="")
     for name, _ in VARIANTS:
         _, avg, _ = results[name]
         print(f"  {_conf_bar(avg):<{col}}", end="")
     print()
 
-    # Token count row
     print(f"  {'Tokens':<12s}", end="")
     for name, _ in VARIANTS:
         segs, _, _ = results[name]
         print(f"  {len(segs):<{col}}", end="")
     print()
 
-    # Delta vs baseline
     _, base_avg, _ = results["baseline"]
     print(f"  {'vs baseline':<12s}", end="")
     print(f"  {'---':<{col}}", end="")
@@ -112,7 +121,6 @@ def compare_image(path: Path, out_dir: Path) -> None:
         print(f"  {sign}{delta*100:.1f}%{'':<{col-7}}", end="")
     print()
 
-    # Per-variant text output
     print()
     for name, _ in VARIANTS:
         segs, avg, _ = results[name]
@@ -127,8 +135,8 @@ def main() -> None:
     parser.add_argument(
         "--images",
         type=Path,
-        default=HERE / "data" / "images",
-        help="Directory of test images (default: data/images/)",
+        default=HERE.parent / "data",
+        help="Directory of test images (default: 0-Data/Image/data/)",
     )
     args = parser.parse_args()
 
@@ -145,7 +153,7 @@ def main() -> None:
         print(f"No images found in {image_dir}")
         sys.exit(1)
 
-    out_dir = HERE / "data" / "preprocess_comparison"
+    out_dir = HERE.parent / "data" / "preprocess_comparison"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("Loading EasyOCR reader (first run may take a moment)...")
@@ -158,7 +166,7 @@ def main() -> None:
         compare_image(img_path, out_dir)
 
     print(f"\n{'='*72}")
-    print("Done. Check data/preprocess_comparison/ for visual diffs.")
+    print(f"Done. Check {out_dir} for visual diffs.")
 
 
 if __name__ == "__main__":

@@ -36,7 +36,7 @@ def _client() -> InferenceClient:
     return InferenceClient(provider="hf-inference", api_key=token)
 
 
-def translate_to_english(
+def _translate_to_english(
     text: str,
     client: InferenceClient | None = None,
     src_lang: str | None = None,
@@ -51,7 +51,7 @@ def translate_to_english(
     return result.translation_text
 
 
-def translate_from_english(
+def _translate_from_english(
     text: str,
     tgt_lang: str,
     client: InferenceClient | None = None,
@@ -88,13 +88,18 @@ def _translate_via_segments(
 
     for seg in segs:
         effective_lang = seg["lang_code"]
-        if src_lang and effective_lang != "en":
+        # Override per-segment detection with the user's hint, but only when the
+        # hint is a non-English language. When src_lang="en", CJK/script detection
+        # (Unicode-range-based) is more reliable than the user's hint, and forcing
+        # it to "en" would cause foreign segments to be passed through untranslated
+        # before chaining to a non-English target language.
+        if src_lang and src_lang != "en" and effective_lang != "en":
             effective_lang = src_lang
 
         if effective_lang == "en":
             parts.append(seg["text"])
         else:
-            parts.append(translate_to_english(seg["text"], client, src_lang=effective_lang))
+            parts.append(_translate_to_english(seg["text"], client, src_lang=effective_lang))
             if not found_foreign:
                 dominant_lang = seg["lang_code"]
                 found_foreign = True
@@ -148,11 +153,17 @@ def translate_text(
     if source_is_english and target_is_english:
         return {"translated_text": text, "source_language": "en", "confidence": confidence, "method": "passthrough"}
 
+    # Passthrough: auto-detected source matches the requested non-English target
+    # (e.g. --to chinese on Chinese text). Base code comparison treats zh-cn/zh-tw as same.
+    if not target_is_english and not source_is_english:
+        if detected.split("-")[0] == tgt_lang.split("-")[0]:
+            return {"translated_text": text, "source_language": detected, "confidence": confidence, "method": "passthrough"}
+
     client = _client()
 
     # English source -> non-English target: single hop, no segmentation needed
     if source_is_english and not target_is_english:
-        translated = translate_from_english(text, tgt_lang, client)
+        translated = _translate_from_english(text, tgt_lang, client)
         return {"translated_text": translated, "source_language": "en", "confidence": confidence, "method": "opus-mt"}
 
     # Mixed or pure foreign text: segment once, translate non-English spans in place
@@ -165,13 +176,13 @@ def translate_text(
         method = "opus-mt-segmented" if english_segs else "opus-mt"
     else:
         # segment_text sees all English but detection disagrees (short/ambiguous text)
-        translated = translate_to_english(text, client, src_lang=src_lang)
+        translated = _translate_to_english(text, client, src_lang=src_lang)
         dominant_lang = detected
         method = "opus-mt"
 
     # Chain to non-English target if requested
     if not target_is_english:
-        translated = translate_from_english(translated, tgt_lang, client)
+        translated = _translate_from_english(translated, tgt_lang, client)
 
     return {"translated_text": translated, "source_language": dominant_lang, "confidence": confidence, "method": method}
 

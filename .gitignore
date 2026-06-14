@@ -159,10 +159,7 @@ venv.bak/
 
 # Data directory
 data/
-font_data/
-font-dataset/
-windows-fonts/
-demo_output/
+Typography/
 
 # PyTorch Model Checkpoint files
 checkpoints/

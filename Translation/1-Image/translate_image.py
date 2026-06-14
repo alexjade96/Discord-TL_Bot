@@ -17,7 +17,10 @@ Environment:
 
 from __future__ import annotations
 
+import logging
 import sys
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 
 import numpy as np
@@ -36,7 +39,8 @@ from ocr import (
     load_image_from_path,
     preprocess,
 )
-from collect import save_submission
+sys.path.insert(0, str(Path(__file__).parent.parent / "0-Data" / "Image" / "training"))
+from collect_image import save_submission  # noqa: E402
 
 _READ_KWARGS = dict(
     width_ths=1e4,
@@ -111,6 +115,8 @@ def translate_image(
     src_lang: str | None = None,
     hint_lang: str | None = None,
     tgt_lang: str | None = None,
+    original_filename: str | None = None,
+    username: str | None = None,
 ) -> dict:
     """Extract text from an image and translate it to English.
 
@@ -119,10 +125,12 @@ def translate_image(
     them side-by-side for comparison.
 
     Args:
-        source:    Discord attachment URL, local file path, or BGR numpy array.
-        src_lang:  Hard override for the source language code (skips detection).
-        hint_lang: User-suggested langdetect code (e.g. 'zh-cn', 'ja', 'ko').
-                   Triggers a second hinted pass alongside the auto pass.
+        source:            Discord attachment URL, local file path, or BGR numpy array.
+        src_lang:          Hard override for the source language code (skips detection).
+        hint_lang:         User-suggested langdetect code (e.g. 'zh-cn', 'ja', 'ko').
+                           Triggers a second hinted pass alongside the auto pass.
+        original_filename: Discord attachment filename; used to name the saved image.
+        username:          Discord username of the submitter; included in saved filename.
 
     Returns:
         dict with keys:
@@ -158,18 +166,23 @@ def translate_image(
         auto.pop("_score", None)
 
     # Save the auto pass to the training dataset (non-fatal)
+    collected_path: str | None = None
     try:
-        save_submission(
+        saved = save_submission(
             raw_image,
             ocr_text=auto["original_text"],
             source_language=auto["source_language"],
             confidence=auto["confidence"],
             ocr_confidence=auto["ocr_confidence"],
+            original_filename=original_filename,
+            username=username,
         )
+        if saved is not None:
+            collected_path = str(saved)
     except Exception:
-        pass
+        logger.warning("Failed to save image to training dataset", exc_info=True)
 
-    return {"auto": auto, "hint": hint}
+    return {"auto": auto, "hint": hint, "collected_path": collected_path}
 
 
 if __name__ == "__main__":
@@ -182,8 +195,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     result = translate_image(args.source, src_lang=args.src, hint_lang=args.hint)
-    print(f"OCR:         {result['original_text']}")
-    print(f"OCR conf:    {result['ocr_confidence'] * 100:.1f}%")
-    print(f"Language:    {result['source_language']} (conf: {result['confidence']})")
-    print(f"Translation: {result['translated_text']}")
-    print(f"Method:      {result['method']}  |  hint_used: {result['hint_used']}")
+    auto = result["auto"]
+    hint = result["hint"]
+    print(f"OCR:         {auto['original_text']}")
+    print(f"OCR conf:    {auto['ocr_confidence'] * 100:.1f}%")
+    print(f"Language:    {auto['source_language']} (conf: {auto['confidence']})")
+    print(f"Translation: {auto['translated_text']}")
+    print(f"Method:      {auto['method']}  |  score: {auto.get('score', 0):.2f}")
+    if hint and hint["method"] != "none":
+        print(f"\nHint pass:")
+        print(f"  OCR:         {hint['original_text']}")
+        print(f"  Translation: {hint['translated_text']}")
+        print(f"  Method:      {hint['method']}  |  score: {hint.get('score', 0):.2f}")

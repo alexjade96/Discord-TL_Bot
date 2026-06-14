@@ -173,6 +173,55 @@ def preprocess_discord(img: np.ndarray) -> np.ndarray:
     return sharpened
 
 
+def preprocess_otsu(img: np.ndarray) -> np.ndarray:
+    """Baseline (2x INTER_CUBIC + grayscale) + Otsu binarization.
+
+    Converts to clean black-on-white binary. Works well for flat Discord UI
+    screenshots with uniform backgrounds. Note: removes gradient information
+    that EasyOCR's CRAFT feature maps can use — test against baseline before
+    adopting as default.
+    """
+    scaled = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return binary
+
+
+def preprocess_light_denoise(img: np.ndarray) -> np.ndarray:
+    """Enhanced variant with lighter denoising (h=2) and tighter CLAHE (4×4 tiles).
+
+    Addresses the over-processing seen in preprocess_enhanced where h=5 denoising
+    and 8×8 CLAHE tiles blur character edges. h=2 preserves stroke detail;
+    4×4 tiles localize contrast enhancement to actual character regions.
+    """
+    scaled = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
+    gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+    denoised = cv2.fastNlMeansDenoising(gray, h=2, templateWindowSize=7, searchWindowSize=21)
+    clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(4, 4))
+    contrast = clahe.apply(denoised)
+    blurred = cv2.GaussianBlur(contrast, (0, 0), sigmaX=3)
+    sharpened = cv2.addWeighted(contrast, 1.3, blurred, -0.3, 0)
+    return sharpened
+
+
+def preprocess_bilateral(img: np.ndarray) -> np.ndarray:
+    """Upscale (LANCZOS4) + bilateral filter + CLAHE (4×4) + unsharp mask.
+
+    Bilateral filtering preserves sharp character stroke edges while smoothing
+    uniform background regions — better suited to text than NL-means, which
+    treats edges and flat regions equally.
+    d=9, sigmaColor=75, sigmaSpace=75 gives moderate edge-preserving smoothing.
+    """
+    scaled = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
+    gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+    filtered = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
+    clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(4, 4))
+    contrast = clahe.apply(filtered)
+    blurred = cv2.GaussianBlur(contrast, (0, 0), sigmaX=3)
+    sharpened = cv2.addWeighted(contrast, 1.3, blurred, -0.3, 0)
+    return sharpened
+
+
 def extract_text(source: str | Path | np.ndarray) -> list[dict]:
     """Run EasyOCR on an image and return detected text segments.
 

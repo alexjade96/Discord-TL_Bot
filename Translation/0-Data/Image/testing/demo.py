@@ -21,15 +21,17 @@ import numpy as np
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+HERE = Path(__file__).parent
+
+load_dotenv(HERE.parent.parent.parent.parent / ".env")
 
 # Force UTF-8 output so CJK characters print correctly on Windows consoles
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # Pipeline imports
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "2-Text"))
+sys.path.insert(0, str(HERE.parent.parent.parent / "1-Image"))
+sys.path.insert(0, str(HERE.parent.parent.parent / "2-Text"))
 
 FONT_DIR = "C:/Windows/Fonts"
 
@@ -82,21 +84,18 @@ def generate_images(strings: list[str], font_path: str, font_size: int = 48) -> 
 
     images = []
     for text in strings:
-        # Measure text bounds with modern API
         dummy = Image.new("RGB", (1, 1))
         draw = ImageDraw.Draw(dummy)
         bbox = draw.textbbox((0, 0), text, font=font)
         w = bbox[2] - bbox[0] + 20
         h = bbox[3] - bbox[1] + 20
 
-        # Gaussian noise background (simulates real image texture)
         noise = np.random.normal(240, 8, (h, w, 3)).clip(0, 255).astype(np.uint8)
         pil_img = Image.fromarray(noise)
 
         draw = ImageDraw.Draw(pil_img)
         draw.text((10, 10 - bbox[1]), text, font=font, fill=(20, 20, 20))
 
-        # Light blur to make it more realistic
         pil_img = pil_img.filter(ImageFilter.GaussianBlur(radius=0.5))
 
         arr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
@@ -107,9 +106,10 @@ def generate_images(strings: list[str], font_path: str, font_size: int = 48) -> 
 
 def run_demo(collect: bool = True, save_images: bool = False) -> None:
     from translate_image import translate_image
-    from collect import dataset_stats
+    sys.path.insert(0, str(HERE.parent / "training"))
+    from collect_image import dataset_stats
 
-    output_dir = Path(__file__).parent / "demo_output"
+    output_dir = HERE.parent / "data" / "demo_output"
     if save_images:
         output_dir.mkdir(exist_ok=True)
 
@@ -129,8 +129,8 @@ def run_demo(collect: bool = True, save_images: bool = False) -> None:
                 cv2.imwrite(str(out_path), img)
 
             try:
-                # Pass raw numpy array directly — skips URL download
-                result = translate_image(img) if collect else _translate_no_collect(img)
+                raw = translate_image(img) if collect else _translate_no_collect(img)
+                result = raw["auto"] if "auto" in raw else raw
 
                 method_tag = f"[{result['method']}]"
                 lang = result["source_language"]

@@ -24,6 +24,11 @@ from detect import analyze_segments  # noqa: E402
 # Add image translation package to path
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "1-Image"))
 from translate_image import translate_image  # noqa: E402
+from ocr import extract_text_combined  # noqa: E402
+
+# Text collection
+sys.path.insert(0, str(Path(__file__).parent / "Translation" / "0-Data" / "Text" / "training"))
+from collect_text import save_submission as save_text_submission  # noqa: E402
 
 # Logging handler setup
 logger = logging.getLogger("discord")
@@ -89,6 +94,27 @@ def _parse_translate_flags(cmd: str) -> tuple[str, str | None, str | None, bool,
     return " ".join(remaining), from_lang, to_lang, analyze, errors
 
 
+def _is_same_language(from_lang: str | None, to_lang: str | None) -> bool:
+    """Return True when source and target resolve to the same language.
+
+    English is the implicit default target, so --from english with no --to flag
+    counts as same-language. Returns False when no --from is given (nothing to check).
+    """
+    if from_lang is None:
+        return False
+    return from_lang == (to_lang or "en")
+
+
+def _same_lang_msg(from_lang: str, extra: str = "") -> str:
+    """Format the 'nothing to translate' message for same-language requests."""
+    lang_name = get_language_name(from_lang)
+    hint_tip = "To translate, add `--from <language>` and `--to <language>` (e.g. `--from chinese --to english`). Defaults to `--to English`."
+    parts = [f"Source and target are both [{lang_name}] — nothing to translate.", hint_tip]
+    if extra:
+        parts.append(extra)
+    return "\n".join(parts)
+
+
 def _fmt_analyze(text: str) -> str:
     """Run segment analysis on text and return a formatted Discord block."""
     segments = analyze_segments(text)
@@ -134,7 +160,9 @@ async def on_message(message):
         return
 
     msg = " ".join(message.content.split()[1:])
-    print(f"Received message: {msg}")
+    attachments = ", ".join(a.filename for a in message.attachments)
+    attachment_str = f" | attachments: {attachments}" if attachments else ""
+    print(f"Received message from [{message.author.name}]: {msg}{attachment_str}")
 
     if client.user.mentioned_in(message) and message.content.startswith(client.user.mention):
         if message.author == client.user:
@@ -164,13 +192,50 @@ async def on_message(message):
 
                 for attachment in message.attachments:
                     if "image" in attachment.content_type:
+                        if _is_same_language(from_lang, to_lang):
+                            status = await message.channel.send("Reading image text...")
+                            try:
+                                ocr_text, ocr_conf = await asyncio.to_thread(
+                                    extract_text_combined, attachment.url
+                                )
+                                if ocr_text:
+                                    conf_str = f" (OCR {ocr_conf * 100:.0f}%)"
+                                    extra = f"**Detected text**{conf_str}:\n> {ocr_text}"
+                                else:
+                                    extra = "No text detected in the image."
+                                await status.edit(content=_same_lang_msg(from_lang, extra))
+                            except Exception as e:
+                                logger.exception(f"OCR error: {e}")
+                                await status.edit(content="Failed to read image text.")
+                            continue
+
                         status = await message.channel.send("Translating image...")
                         try:
                             result = await asyncio.to_thread(
-                                translate_image, attachment.url, None, from_lang, to_lang
+                                translate_image, attachment.url, None, from_lang, to_lang,
+                                attachment.filename, message.author.name,
                             )
                             auto = result["auto"]
                             hint = result["hint"]
+                            collected = result.get("collected_path")
+
+                            if collected:
+                                logger.info(
+                                    "Collected: file=%s | user=%s | attachment=%s | "
+                                    "lang=%s | lang_conf=%s | ocr_conf=%s",
+                                    collected,
+                                    message.author.name,
+                                    attachment.filename,
+                                    auto["source_language"],
+                                    f"{auto['confidence']*100:.0f}%" if auto.get("confidence") is not None else "n/a",
+                                    f"{auto['ocr_confidence']*100:.0f}%" if auto.get("ocr_confidence") is not None else "n/a",
+                                )
+                            else:
+                                logger.debug(
+                                    "Skipped collection (duplicate or no text): user=%s attachment=%s",
+                                    message.author.name,
+                                    attachment.filename,
+                                )
 
                             if auto["method"] == "none":
                                 await status.edit(content="No text detected in the image.")
@@ -213,6 +278,8 @@ async def on_message(message):
 
                 if not text_to_translate:
                     await message.channel.send("Please provide text after `/translate`.")
+                elif _is_same_language(from_lang, to_lang):
+                    await message.channel.send(_same_lang_msg(from_lang))
                 else:
                     status = await message.channel.send("Translating...")
                     try:
@@ -220,22 +287,55 @@ async def on_message(message):
                         auto_result = await asyncio.to_thread(
                             translate_text, text_to_translate, None, to_lang
                         )
-                        parts = [_fmt_result(auto_result, "Auto", to_lang)]
 
-                        # Hinted pass (only when --from is given)
-                        if from_lang:
-                            hint_result = await asyncio.to_thread(
-                                translate_text, text_to_translate, from_lang, to_lang
-                            )
-                            hint_label = f"Hint ({get_language_name(from_lang)})"
-                            parts.append(_fmt_result(hint_result, hint_label, to_lang))
+                        # Auto-detected source matches target — nothing to translate
+                        if auto_result["method"] == "passthrough" and auto_result["source_language"] != "en":
+                            extra = f"**Detected text**:\n> {text_to_translate}"
+                            await status.edit(content=_same_lang_msg(auto_result["source_language"], extra))
+                        else:
+                            parts = [_fmt_result(auto_result, "Auto", to_lang)]
 
-                        if analyze:
-                            analysis = await asyncio.to_thread(_fmt_analyze, text_to_translate)
-                            if analysis:
-                                parts.append(analysis)
+                            # Hinted pass (only when --from is given)
+                            if from_lang:
+                                hint_result = await asyncio.to_thread(
+                                    translate_text, text_to_translate, from_lang, to_lang
+                                )
+                                hint_label = f"Hint ({get_language_name(from_lang)})"
+                                parts.append(_fmt_result(hint_result, hint_label, to_lang))
 
-                        await status.edit(content="\n\n".join(parts))
+                            if analyze:
+                                analysis = await asyncio.to_thread(_fmt_analyze, text_to_translate)
+                                if analysis:
+                                    parts.append(analysis)
+
+                            await status.edit(content="\n\n".join(parts))
+
+                            # Collect non-passthrough translations
+                            if auto_result["method"] not in ("none", "passthrough"):
+                                try:
+                                    saved = save_text_submission(
+                                        text_to_translate,
+                                        auto_result["translated_text"],
+                                        source_language=auto_result["source_language"],
+                                        target_language=to_lang or "en",
+                                        confidence=auto_result.get("confidence"),
+                                        method=auto_result.get("method"),
+                                        username=message.author.name,
+                                    )
+                                    if saved:
+                                        logger.info(
+                                            "Collected text: user=%s | lang=%s | method=%s",
+                                            message.author.name,
+                                            auto_result["source_language"],
+                                            auto_result.get("method"),
+                                        )
+                                    else:
+                                        logger.debug(
+                                            "Skipped text collection (duplicate): user=%s",
+                                            message.author.name,
+                                        )
+                                except Exception:
+                                    logger.warning("Failed to save text to training dataset", exc_info=True)
                     except Exception as e:
                         logger.exception(f"Translation error: {e}")
                         await status.edit(content="Translation failed. Please try again later.")

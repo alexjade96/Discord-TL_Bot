@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 
 DATA_DIR = Path(__file__).parent.parent / "data"
-IMAGES_DIR = DATA_DIR / "images"
 LABELS_FILE = DATA_DIR / "labels.jsonl"
 DEFAULT_OUT = Path(__file__).parent / "lmdb_train"
 
@@ -85,7 +84,7 @@ def main():
     args = parser.parse_args()
 
     data_dir = Path(args.data)
-    images_dir = data_dir / "images"
+    images_dir = data_dir
     labels_file = data_dir / "labels.jsonl"
 
     print(f"Loading labels from {labels_file}")
