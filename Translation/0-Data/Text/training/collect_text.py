@@ -77,6 +77,7 @@ def save_submission(
         "text_hash": text_hash,
         "original_text": original_text,
         "translated_text": translated_text,
+        "correct_translation": None, # manual correction of translated_text; used in future training
         "source_language": source_language,
         "target_language": target_language,
         "confidence": confidence,

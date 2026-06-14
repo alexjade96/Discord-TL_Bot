@@ -161,6 +161,13 @@ venv.bak/
 data/
 Typography/
 
+# Image files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+
 # PyTorch Model Checkpoint files
 checkpoints/
 

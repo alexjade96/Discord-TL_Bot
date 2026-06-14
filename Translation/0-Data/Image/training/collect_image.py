@@ -119,6 +119,8 @@ def save_submission(
         "filename": filename,
         "image_hash": img_hash,
         "ocr_text": ocr_text,
+        "correct_text": None,        # manual correction of ocr_text; used by dataset.py if set
+        "correct_translation": None, # manually verified translation; reserved for future training
         "source_language": source_language,
         "confidence": confidence,
         "ocr_confidence": ocr_confidence,
