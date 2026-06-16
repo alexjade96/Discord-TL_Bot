@@ -1,4 +1,8 @@
-﻿"""Text translation via HuggingFace Inference API.
+﻿"""Text translation via local fine-tuned models with HuggingFace Inference API fallback.
+
+Local models are installed by 0-Data/Text/training/deploy.py into ~/.tl-bot/models/.
+If a direction's local model is present it is used; otherwise the HF Inference API
+is called instead. No code change is needed to activate a newly deployed model.
 
 Usage (CLI):
     python translate_text.py "Меня зовут Вольфганг"
@@ -6,12 +10,13 @@ Usage (CLI):
     python translate_text.py --tgt fr "Hello world"
 
 Environment:
-    HF_TOKEN — HuggingFace Inference API token (required)
+    HF_TOKEN — HuggingFace Inference API token (required as fallback when no local model)
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from huggingface_hub import InferenceClient
 
@@ -23,10 +28,60 @@ from detect import (
     segment_text,
 )
 
-# Multilingual → English
+# Multilingual → English (default fallback for languages without a dedicated model)
 TRANSLATE_MODEL = "Helsinki-NLP/opus-mt-mul-en"
-# English → target language (format with ISO 639-1 code)
+# English → target language (format with ISO 639-1 code, default pattern)
 TRANSLATE_MODEL_TO = "Helsinki-NLP/opus-mt-en-{}"
+
+# Language-specific model overrides: lang_code → (src_to_en_model, en_to_tgt_model)
+# Used when the default mul-en or opus-mt-en-{tgt} pattern is unavailable or
+# produces poor results for a specific language.
+_LANG_MODEL_OVERRIDES: dict[str, tuple[str, str]] = {
+    # opus-mt-mul-en produces "I'm sorry." for Korean — use dedicated ko→en model.
+    # opus-mt-en-ko does not exist on HuggingFace — use Tatoeba Challenge big model.
+    "ko": (
+        "Helsinki-NLP/opus-mt-ko-en",
+        "Helsinki-NLP/opus-mt-tc-big-en-ko",
+    ),
+}
+
+# Local fine-tuned models installed by deploy.py
+_LOCAL_MODELS_DIR = Path.home() / ".tl-bot" / "models"
+
+# Module-level caches: direction → (model, tokenizer) to avoid reloading per call
+_local_model_cache: dict[str, tuple] = {}
+
+
+def _load_local_model(direction: str):
+    """Return (MarianMTModel, MarianTokenizer) for a deployed direction, or None."""
+    if direction in _local_model_cache:
+        return _local_model_cache[direction]
+
+    model_dir = _LOCAL_MODELS_DIR / direction
+    if not model_dir.exists():
+        _local_model_cache[direction] = None
+        return None
+
+    try:
+        from transformers import MarianMTModel, MarianTokenizer
+        tokenizer = MarianTokenizer.from_pretrained(str(model_dir))
+        model = MarianMTModel.from_pretrained(str(model_dir))
+        model.eval()
+        _local_model_cache[direction] = (model, tokenizer)
+        return _local_model_cache[direction]
+    except Exception:
+        _local_model_cache[direction] = None
+        return None
+
+
+def _run_local(text: str, model, tokenizer) -> str:
+    """Run inference on a locally loaded MarianMT model."""
+    import torch
+    inputs = tokenizer([text], return_tensors="pt", padding=True,
+                       truncation=True, max_length=512)
+    with torch.no_grad():
+        translated = model.generate(**inputs)
+    return tokenizer.decode(translated[0], skip_special_tokens=True)
 
 
 def _client() -> InferenceClient:
@@ -41,11 +96,28 @@ def _translate_to_english(
     client: InferenceClient | None = None,
     src_lang: str | None = None,
 ) -> str:
-    """Translate text to English using Helsinki-NLP/opus-mt-mul-en."""
+    """Translate text to English.
+
+    Resolution order:
+    1. Local fine-tuned model for this direction (if deployed via deploy.py)
+    2. Language-specific HF model from _LANG_MODEL_OVERRIDES (e.g. opus-mt-ko-en)
+    3. Default multilingual model (opus-mt-mul-en) via HF API
+    """
+    lang_code = src_lang.split("-")[0] if src_lang else None
+    override = _LANG_MODEL_OVERRIDES.get(lang_code) if lang_code else None
+
+    # Direction key for local model: "ko-en" or "mul-en"
+    local_direction = f"{lang_code}-en" if override else "mul-en"
+    local = _load_local_model(local_direction)
+    if local:
+        return _run_local(text, *local)
+
     c = client or _client()
-    if src_lang:
-        api_lang = src_lang.split("-")[0]
-        result = c.translation(text, model=TRANSLATE_MODEL, src_lang=api_lang, tgt_lang="en")
+    if override:
+        result = c.translation(text, model=override[0])
+    elif src_lang:
+        result = c.translation(text, model=TRANSLATE_MODEL,
+                               src_lang=lang_code, tgt_lang="en")
     else:
         result = c.translation(text, model=TRANSLATE_MODEL)
     return result.translation_text
@@ -56,15 +128,25 @@ def _translate_from_english(
     tgt_lang: str,
     client: InferenceClient | None = None,
 ) -> str:
-    """Translate English text to a target language using Helsinki-NLP/opus-mt-en-{tgt}.
+    """Translate English text to a target language.
 
-    tgt_lang is a langdetect-style code (e.g. 'fr', 'zh-cn', 'ja').
-    Uses the bare ISO 639-1 code as the model suffix.
+    Resolution order:
+    1. Local fine-tuned model for this direction (if deployed via deploy.py)
+    2. Language-specific HF model from _LANG_MODEL_OVERRIDES (e.g. opus-mt-tc-big-en-ko)
+    3. Default pattern model (opus-mt-en-{tgt}) via HF API
+
+    tgt_lang is a langdetect-style code (e.g. 'fr', 'zh-cn', 'ja', 'ko').
     """
-    c = client or _client()
     tgt_code = tgt_lang.split("-")[0]
-    model = TRANSLATE_MODEL_TO.format(tgt_code)
-    result = c.translation(text, model=model)
+    override = _LANG_MODEL_OVERRIDES.get(tgt_code)
+
+    local = _load_local_model(f"en-{tgt_code}")
+    if local:
+        return _run_local(text, *local)
+
+    c = client or _client()
+    hf_model = override[1] if override else TRANSLATE_MODEL_TO.format(tgt_code)
+    result = c.translation(text, model=hf_model)
     return result.translation_text
 
 
