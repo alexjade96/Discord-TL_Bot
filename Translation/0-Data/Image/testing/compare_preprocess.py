@@ -25,8 +25,8 @@ import numpy as np
 
 HERE = Path(__file__).parent
 
-# ocr.py lives in Translation/1-Image/ — three levels up from testing/
-sys.path.insert(0, str(HERE.parent.parent.parent / "1-Image"))
+# ocr.py lives in Translation/2-Image/ — three levels up from testing/
+sys.path.insert(0, str(HERE.parent.parent.parent / "2-Image"))
 
 from ocr import (
     preprocess,

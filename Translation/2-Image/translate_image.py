@@ -26,10 +26,10 @@ from pathlib import Path
 import numpy as np
 
 # Pull in the text translation pipeline from the sibling package
-sys.path.insert(0, str(Path(__file__).parent.parent / "2-Text"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "1-Text"))
 from translate_text import translate_text  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "2-Text"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "1-Text"))
 from detect import confidence_for_language  # noqa: E402
 
 from ocr import (
@@ -187,6 +187,8 @@ def translate_image(
 
 if __name__ == "__main__":
     import argparse
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
     parser = argparse.ArgumentParser(description="Translate text in an image to English.")
     parser.add_argument("source", help="Image file path or URL")

@@ -42,7 +42,7 @@ Flags parsed by `_parse_translate_flags()` in `TL-Bot.py` (called once per `/tra
 - `--to <language>` — set output language (default: English)
 - `--analyze` — show segment analysis alongside the translation
 
-Language names/codes are resolved via `parse_language_hint()` in `Translation/2-Text/utils.py` (supports common names, aliases, ISO 639-1 codes).
+Language names/codes are resolved via `parse_language_hint()` in `Translation/1-Text/utils.py` (supports common names, aliases, ISO 639-1 codes).
 
 `_same_lang_msg(from_lang, extra="")` — shared helper in `TL-Bot.py` that formats the "nothing to translate" Discord message when source and target resolve to the same language.
 
@@ -66,7 +66,7 @@ Shared helpers:
 
 ## Architecture
 
-### Text Translation (`Translation/2-Text/`)
+### Text Translation (`Translation/1-Text/`)
 
 - **`detect.py`** — Language detection and text segmentation:
   - `segment_text(text)` — single unified segmentation function used by both the translation pipeline and the bot's `--analyze` display. Identifies CJK spans by Unicode range, classifies Latin gaps via lingua (noise-stripped: @mentions and digits removed before detection).
@@ -104,7 +104,7 @@ Shared helpers:
 
 - **`WHISPER_LOCAL.md`** — Step-by-step guide for migrating to a locally fine-tuned Whisper model: when to switch, dependencies, local-first inference pattern (matching `translate_text.py`), fine-tuning with `Seq2SeqTrainer`, deploy to `~/.tl-bot/whisper/`, corrections schema.
 
-### Image Translation (`Translation/1-Image/`)
+### Image Translation (`Translation/2-Image/`)
 
 - **`ocr.py`** — EasyOCR pipeline with OpenCV preprocessing:
   - Three lazy EasyOCR readers (zh/ja/ko, each paired with en). Best average confidence wins on auto-detect; specific reader used when hinted.
@@ -311,8 +311,8 @@ cd Translation/0-Data/Image/testing/
 
 Exploratory work; production pipelines are in the `.py` modules above:
 
-- `Translation/1-Image/backup/OCR_Models.ipynb` — EasyOCR, pytesseract, TrOCR approaches
-- `Translation/2-Text/Text_Translation.ipynb` — mBART-50, Qwen2.5 experiments (HF token must come from environment, not hardcoded)
+- `Translation/2-Image/backup/OCR_Models.ipynb` — EasyOCR, pytesseract, TrOCR approaches
+- `Translation/1-Text/Text_Translation.ipynb` — mBART-50, Qwen2.5 experiments (HF token must come from environment, not hardcoded)
 - `Translation/3-Audio/Audio_Translation.ipynb` — original speech-to-text research; production pipeline is now in `transcribe_audio.py` / `translate_audio.py`
 
 ### Typography Module (`Typography/`)
@@ -341,7 +341,7 @@ Always run scripts with `.venv\Scripts\python.exe` — the system Python lacks `
 - **Secrets**: `DISCORD_BOT_TOKEN` and `HF_TOKEN` must never be hardcoded; load from `.env` (gitignored).
 - **No git co-author tags**: Do not add `Co-Authored-By: Claude` lines to commits in this repo.
 - **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Image/training/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, or model checkpoints.
-- **Test suite**: `pytest` tests exist under `Translation/1-Image/tests/` and `Translation/2-Text/tests/`. Run with `pytest` from the repo root.
+- **Test suite**: `pytest` tests exist under `Translation/2-Image/tests/` and `Translation/1-Text/tests/`. Run with `pytest` from the repo root.
 - **Preprocessing variants**: All six variants are available in `ocr.py`; `preprocess()` (baseline) is the production default. Use `compare_preprocess.py` to evaluate before switching. `light_denoise` is the most consistent alternative.
 - **Public API surface**: `translate_text()` in `translate_text.py` is the public entry point; `_translate_to_english()` and `_translate_from_english()` are private implementation details.
 - **Collection is non-fatal**: `collect_image.save_submission()`, `collect_text.save_submission()`, and `collect_audio.save_submission()` are all wrapped in try/except — a collection failure must never prevent the translation response from being sent.

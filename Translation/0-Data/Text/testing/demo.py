@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 load_dotenv(HERE.parent.parent.parent.parent / ".env")
 
 # Pipeline imports
-sys.path.insert(0, str(HERE.parent.parent.parent / "2-Text"))
+sys.path.insert(0, str(HERE.parent.parent.parent / "1-Text"))
 sys.path.insert(0, str(HERE.parent / "training"))
 
 # fmt: off

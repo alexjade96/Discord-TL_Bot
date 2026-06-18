@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from translate_text import translate_text, translate_to_english
+from translate_text import translate_text
 
 
 def _mock_client(translation_text="translated output"):
@@ -45,12 +45,12 @@ class TestTranslateText:
         assert result["translated_text"] == "My name is Wolfgang"
 
     @patch("translate_text._client")
-    def test_calls_translation_api(self, mock_client_fn):
+    def test_calls_translation_api_with_src_lang(self, mock_client_fn):
         client = _mock_client("Good morning")
         mock_client_fn.return_value = client
         translate_text("早上好", src_lang="zh-cn")
         client.translation.assert_called_once_with(
-            "早上好", model="Helsinki-NLP/opus-mt-mul-en"
+            "早上好", model="Helsinki-NLP/opus-mt-mul-en", src_lang="zh", tgt_lang="en"
         )
 
     @patch("translate_text._client")
@@ -61,17 +61,9 @@ class TestTranslateText:
         assert "source_language" in result
         assert "method" in result
 
-
-class TestTranslateToEnglish:
-    def test_calls_client_translation(self):
-        client = _mock_client("hello world")
-        result = translate_to_english("hola mundo", client)
-        client.translation.assert_called_once_with(
-            "hola mundo", model="Helsinki-NLP/opus-mt-mul-en"
-        )
-        assert result == "hello world"
-
-    def test_returns_string(self):
-        client = _mock_client("good evening")
-        result = translate_to_english("buenas noches", client)
-        assert result == "good evening"
+    @patch("translate_text._client")
+    def test_same_src_as_tgt_is_passthrough(self, mock_client_fn):
+        """Source and target resolving to the same language returns passthrough."""
+        result = translate_text("안녕하세요", src_lang="ko", tgt_lang="ko")
+        mock_client_fn.assert_not_called()
+        assert result["method"] == "passthrough"

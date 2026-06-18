@@ -16,14 +16,38 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from huggingface_hub import InferenceClient
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "2-Text"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "1-Text"))
 from detect import detect_language_with_confidence  # noqa: E402
 
 WHISPER_MODEL = "openai/whisper-large-v3"
+
+# Map leading magic bytes → file extension so the HF API can infer content type.
+_AUDIO_MAGIC: list[tuple[bytes, str]] = [
+    (b"OggS",           ".ogg"),
+    (b"RIFF",           ".wav"),
+    (b"\x1a\x45\xdf\xa3", ".webm"),
+    (b"ID3",            ".mp3"),
+    (b"\xff\xfb",       ".mp3"),
+    (b"\xff\xf3",       ".mp3"),
+    (b"\xff\xf2",       ".mp3"),
+]
+
+
+def _bytes_to_tempfile(audio: bytes) -> str:
+    """Write audio bytes to a named temp file, choosing the extension from magic bytes.
+
+    Returns the file path. The caller is responsible for deleting it.
+    """
+    header = audio[:4]
+    ext = next((e for sig, e in _AUDIO_MAGIC if header.startswith(sig)), ".ogg")
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
+        f.write(audio)
+        return f.name
 
 
 def _client() -> InferenceClient:
@@ -51,10 +75,18 @@ def transcribe(
             confidence      -- detection confidence [0, 1], or None
             method          -- 'whisper-hf'
     """
-    if isinstance(source, Path):
+    tmp_path: str | None = None
+    if isinstance(source, bytes):
+        tmp_path = _bytes_to_tempfile(source)
+        source = tmp_path
+    elif isinstance(source, Path):
         source = str(source)
 
-    result = _client().automatic_speech_recognition(source, model=WHISPER_MODEL)
+    try:
+        result = _client().automatic_speech_recognition(source, model=WHISPER_MODEL)
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
     transcript = (result.text or "").strip()
 
     if src_lang:

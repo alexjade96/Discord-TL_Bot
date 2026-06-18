@@ -17,19 +17,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Add text translation package to path
-sys.path.insert(0, str(Path(__file__).parent / "Translation" / "2-Text"))
+sys.path.insert(0, str(Path(__file__).parent / "Translation" / "1-Text"))
 from translate_text import translate_text
 from utils import get_language_name, parse_language_hint  # noqa: E402
 from detect import analyze_segments  # noqa: E402
 
 # Add image translation package to path
-sys.path.insert(0, str(Path(__file__).parent / "Translation" / "1-Image"))
+sys.path.insert(0, str(Path(__file__).parent / "Translation" / "2-Image"))
 from translate_image import translate_image  # noqa: E402
 from ocr import extract_text_combined  # noqa: E402
 
 # Add audio translation package to path
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "3-Audio"))
 from translate_audio import translate_audio  # noqa: E402
+
+# Add video translation package to path
+sys.path.insert(0, str(Path(__file__).parent / "Translation" / "4-Video"))
+from translate_video import translate_video  # noqa: E402
 
 # Text collection
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "0-Data" / "Text" / "training"))
@@ -77,6 +81,14 @@ _MAGIC_BYTES: dict[str, list[bytes]] = {
     "audio/mpeg": [b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"],
     "audio/wav":  [b"RIFF"],
     "audio/webm": [b"\x1a\x45\xdf\xa3"],
+    # Video — MP4 ftyp box sizes vary; WebM/MKV share the EBML magic
+    "video/mp4":        [b"\x00\x00\x00\x14ftyp", b"\x00\x00\x00\x18ftyp",
+                         b"\x00\x00\x00\x1cftyp", b"\x00\x00\x00\x20ftyp",
+                         b"\x00\x00\x00\x24ftyp", b"\x00\x00\x00\x28ftyp"],
+    "video/quicktime":  [b"\x00\x00\x00\x14ftyp", b"\x00\x00\x00\x18ftyp",
+                         b"\x00\x00\x00\x1cftyp", b"\x00\x00\x00\x20ftyp"],
+    "video/webm":       [b"\x1a\x45\xdf\xa3"],
+    "video/x-matroska": [b"\x1a\x45\xdf\xa3"],
 }
 
 
@@ -111,6 +123,7 @@ def _check_content_safety(raw: bytes, content_type: str, filename: str) -> str |
 # Per-type size limits applied before downloading attachment content
 _MAX_IMAGE_BYTES     = 8 * 1024 * 1024   # 8 MB
 _MAX_AUDIO_BYTES     = 8 * 1024 * 1024   # 8 MB  (Discord default upload cap)
+_MAX_VIDEO_BYTES     = 50 * 1024 * 1024  # 50 MB (covers Nitro Basic uploads)
 _MAX_TEXT_BYTES      = 50 * 1024          # 50 KB
 _MAX_TRANSLATE_CHARS = 3000               # character cap passed to translate_text
 
@@ -452,6 +465,69 @@ async def _handle_audio(
         await status.edit(content="Audio transcription failed. Please try again later.")
 
 
+async def _handle_video(
+    attachment: discord.Attachment,
+    from_lang: str | None,
+    to_lang: str | None,
+    analyze: bool,
+    channel: discord.abc.Messageable,
+    author_name: str,
+) -> None:
+    """Verify, extract audio, transcribe, translate, and respond for a video attachment."""
+    # 1. Verify
+    if attachment.size > _MAX_VIDEO_BYTES:
+        await channel.send(
+            f"Video file `{attachment.filename}` is too large "
+            f"({attachment.size / 1024 / 1024:.1f} MB). "
+            f"Maximum is {_MAX_VIDEO_BYTES // 1024 // 1024} MB."
+        )
+        return
+
+    header = await _fetch_header(attachment.url)
+    if header:
+        err = _check_content_safety(header, attachment.content_type, attachment.filename)
+        if err:
+            await channel.send(err)
+            return
+
+    # 2. Perform
+    status = await channel.send(f"Extracting audio from `{attachment.filename}`...")
+    try:
+        result = await asyncio.to_thread(
+            translate_video, attachment.url, from_lang, to_lang,
+            attachment.filename, author_name,
+        )
+
+        if not result["original_text"]:
+            await status.edit(content="No speech detected in the video.")
+            return
+
+        if result["collected"]:
+            logger.info("Collected video: user=%s | file=%s | lang=%s | method=%s",
+                        author_name, attachment.filename,
+                        result["source_language"], result["method"])
+        else:
+            logger.debug("Skipped video collection (duplicate or no speech): user=%s file=%s",
+                         author_name, attachment.filename)
+
+        # 3. Return result — reuses _fmt_result with ocr=True to show transcript + translation
+        parts = [_fmt_result(result, "Auto", to_lang, ocr=True)]
+
+        if analyze and result["original_text"]:
+            analysis = await asyncio.to_thread(_fmt_analyze, result["original_text"])
+            if analysis:
+                parts.append(analysis)
+
+        final_msg = "\n\n".join(parts)
+        if len(final_msg) > 1900:
+            final_msg = final_msg[:1900] + "\n_[message truncated]_"
+        await status.edit(content=final_msg)
+
+    except Exception as e:
+        logger.exception(f"Video translation error: {e}")
+        await status.edit(content="Video translation failed. Please try again later.")
+
+
 async def _handle_text_file(
     attachment: discord.Attachment,
     from_lang: str | None,
@@ -605,7 +681,7 @@ async def on_message(message):
                 elif "audio" in attachment.content_type:
                     await _handle_audio(attachment, from_lang, to_lang, analyze, message.channel, message.author.name)
                 elif "video" in attachment.content_type:
-                    await message.channel.send(f"Received video file: {attachment.url}")
+                    await _handle_video(attachment, from_lang, to_lang, analyze, message.channel, message.author.name)
                 elif "text" in attachment.content_type:
                     await _handle_text_file(attachment, from_lang, to_lang, analyze, message.channel, message.author.name)
                 else:

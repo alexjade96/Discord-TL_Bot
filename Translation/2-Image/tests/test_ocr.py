@@ -2,6 +2,7 @@
 
 import sys
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -34,6 +35,16 @@ SAMPLE_RESULTS = [
 ]
 
 
+def _patch_readers(results):
+    """Patch all three CJK readers to return the same `results`."""
+    reader = _mock_reader(results)
+    return (
+        patch("ocr._get_reader_zh", return_value=reader),
+        patch("ocr._get_reader_ja", return_value=reader),
+        patch("ocr._get_reader_ko", return_value=reader),
+    )
+
+
 # ---------------------------------------------------------------------------
 # preprocess
 # ---------------------------------------------------------------------------
@@ -55,46 +66,45 @@ class TestPreprocess:
 # ---------------------------------------------------------------------------
 
 class TestExtractText:
-    @patch("ocr._get_reader")
-    def test_returns_sorted_segments(self, mock_get_reader):
-        # Results returned out of order (lower y first in our list but bbox higher)
+    def test_returns_sorted_segments(self):
         results = [
             ([[10, 80], [90, 80], [90, 100], [10, 100]], "Second line", 0.90),
             ([[10, 20], [90, 20], [90, 40], [10, 40]], "First line", 0.95),
         ]
-        mock_get_reader.return_value = _mock_reader(results)
-        segments = ocr.extract_text(_blank_image())
+        p1, p2, p3 = _patch_readers(results)
+        with p1, p2, p3:
+            segments = ocr.extract_text(_blank_image())
         assert segments[0]["text"] == "First line"
         assert segments[1]["text"] == "Second line"
 
-    @patch("ocr._get_reader")
-    def test_segment_keys(self, mock_get_reader):
-        mock_get_reader.return_value = _mock_reader(SAMPLE_RESULTS)
-        segments = ocr.extract_text(_blank_image())
+    def test_segment_keys(self):
+        p1, p2, p3 = _patch_readers(SAMPLE_RESULTS)
+        with p1, p2, p3:
+            segments = ocr.extract_text(_blank_image())
         assert all("text" in s and "confidence" in s and "bbox" in s for s in segments)
 
-    @patch("ocr._get_reader")
-    def test_empty_text_segments_excluded(self, mock_get_reader):
+    def test_empty_text_segments_excluded(self):
         results = [
             ([[0, 0], [10, 0], [10, 10], [0, 10]], "   ", 0.99),
             ([[0, 20], [10, 20], [10, 30], [0, 30]], "Real text", 0.85),
         ]
-        mock_get_reader.return_value = _mock_reader(results)
-        segments = ocr.extract_text(_blank_image())
+        p1, p2, p3 = _patch_readers(results)
+        with p1, p2, p3:
+            segments = ocr.extract_text(_blank_image())
         assert len(segments) == 1
         assert segments[0]["text"] == "Real text"
 
-    @patch("ocr._get_reader")
-    def test_no_sort_key_in_output(self, mock_get_reader):
-        mock_get_reader.return_value = _mock_reader(SAMPLE_RESULTS)
-        segments = ocr.extract_text(_blank_image())
+    def test_no_sort_key_in_output(self):
+        p1, p2, p3 = _patch_readers(SAMPLE_RESULTS)
+        with p1, p2, p3:
+            segments = ocr.extract_text(_blank_image())
         for s in segments:
             assert "_top_y" not in s
 
-    @patch("ocr._get_reader")
-    def test_empty_image_returns_empty_list(self, mock_get_reader):
-        mock_get_reader.return_value = _mock_reader([])
-        assert ocr.extract_text(_blank_image()) == []
+    def test_empty_image_returns_empty_list(self):
+        p1, p2, p3 = _patch_readers([])
+        with p1, p2, p3:
+            assert ocr.extract_text(_blank_image()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -102,24 +112,24 @@ class TestExtractText:
 # ---------------------------------------------------------------------------
 
 class TestExtractTextCombined:
-    @patch("ocr._get_reader")
-    def test_combines_text_with_space(self, mock_get_reader):
-        mock_get_reader.return_value = _mock_reader(SAMPLE_RESULTS)
-        text, _ = ocr.extract_text_combined(_blank_image())
+    def test_combines_text_with_space(self):
+        p1, p2, p3 = _patch_readers(SAMPLE_RESULTS)
+        with p1, p2, p3:
+            text, _ = ocr.extract_text_combined(_blank_image())
         assert "Hello world" in text
         assert "早上好" in text
 
-    @patch("ocr._get_reader")
-    def test_average_confidence(self, mock_get_reader):
-        mock_get_reader.return_value = _mock_reader(SAMPLE_RESULTS)
-        _, conf = ocr.extract_text_combined(_blank_image())
+    def test_average_confidence(self):
+        p1, p2, p3 = _patch_readers(SAMPLE_RESULTS)
+        with p1, p2, p3:
+            _, conf = ocr.extract_text_combined(_blank_image())
         expected = round((0.98 + 0.91) / 2, 4)
         assert conf == expected
 
-    @patch("ocr._get_reader")
-    def test_no_text_returns_empty_and_zero(self, mock_get_reader):
-        mock_get_reader.return_value = _mock_reader([])
-        text, conf = ocr.extract_text_combined(_blank_image())
+    def test_no_text_returns_empty_and_zero(self):
+        p1, p2, p3 = _patch_readers([])
+        with p1, p2, p3:
+            text, conf = ocr.extract_text_combined(_blank_image())
         assert text == ""
         assert conf == 0.0
 

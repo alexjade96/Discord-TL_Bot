@@ -30,8 +30,8 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # Pipeline imports
-sys.path.insert(0, str(HERE.parent.parent.parent / "1-Image"))
-sys.path.insert(0, str(HERE.parent.parent.parent / "2-Text"))
+sys.path.insert(0, str(HERE.parent.parent.parent / "2-Image"))
+sys.path.insert(0, str(HERE.parent.parent.parent / "1-Text"))
 
 FONT_DIR = "C:/Windows/Fonts"
 

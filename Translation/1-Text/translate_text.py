@@ -271,6 +271,8 @@ def translate_text(
 
 if __name__ == "__main__":
     import argparse
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
     parser = argparse.ArgumentParser(description="Translate text.")
     parser.add_argument("text", help="Text to translate")

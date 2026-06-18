@@ -172,7 +172,7 @@ Typography/
 checkpoints/
 
 # EasyOCR training artefacts
-Translation/1-Image/training/lmdb_*/
+Translation/2-Image/training/lmdb_*/
 
 # Spyder project settings
 .spyderproject
