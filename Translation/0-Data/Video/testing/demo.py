@@ -36,6 +36,8 @@ load_dotenv(HERE.parent.parent.parent.parent / ".env")
 sys.path.insert(0, str(HERE.parent.parent.parent / "4-Video"))
 sys.path.insert(0, str(HERE.parent / "training"))
 
+from synthesize_video import _OPUS_SAMPLE_RATE  # noqa: E402
+
 # fmt: off
 SAMPLES = [
     {
@@ -82,9 +84,9 @@ def wrap_audio_in_mkv(audio_bytes: bytes) -> bytes:
     try:
         with av.open(io.BytesIO(audio_bytes)) as in_c:
             in_stream = next(s for s in in_c.streams if s.type == "audio")
-            resampler = av.AudioResampler(format="s16", layout="mono", rate=48000)
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=_OPUS_SAMPLE_RATE)
             with av.open(out_path, mode="w", format="matroska") as out_c:
-                out_stream = out_c.add_stream("libopus", rate=48000)
+                out_stream = out_c.add_stream("libopus", rate=_OPUS_SAMPLE_RATE)
                 for frame in in_c.decode(in_stream):
                     for resampled in resampler.resample(frame):
                         resampled.pts = None

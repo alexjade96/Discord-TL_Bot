@@ -48,6 +48,9 @@ _LANG_MODEL_OVERRIDES: dict[str, tuple[str, str]] = {
 # Local fine-tuned models installed by deploy.py
 _LOCAL_MODELS_DIR = Path.home() / ".tl-bot" / "models"
 
+# MarianMT tokenizer max sequence length; sequences longer than this are truncated.
+_MAX_TOKEN_LENGTH = 512
+
 # Module-level caches: direction → (model, tokenizer) to avoid reloading per call
 _local_model_cache: dict[str, tuple] = {}
 
@@ -78,7 +81,7 @@ def _run_local(text: str, model, tokenizer) -> str:
     """Run inference on a locally loaded MarianMT model."""
     import torch
     inputs = tokenizer([text], return_tensors="pt", padding=True,
-                       truncation=True, max_length=512)
+                       truncation=True, max_length=_MAX_TOKEN_LENGTH)
     with torch.no_grad():
         translated = model.generate(**inputs)
     return tokenizer.decode(translated[0], skip_special_tokens=True)
@@ -271,6 +274,10 @@ def translate_text(
 
 if __name__ == "__main__":
     import argparse
+    import io as _io
+    import sys as _sys
+    _sys.stdout = _io.TextIOWrapper(_sys.stdout.buffer, encoding="utf-8", errors="replace")
+    _sys.stderr = _io.TextIOWrapper(_sys.stderr.buffer, encoding="utf-8", errors="replace")
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).parent.parent.parent / ".env")
 

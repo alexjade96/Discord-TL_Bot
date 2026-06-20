@@ -159,6 +159,7 @@ venv.bak/
 
 # Data directory
 data/
+logs/
 Typography/
 
 # Image files

@@ -88,9 +88,26 @@ def load_image_from_path(path: str | Path) -> np.ndarray:
     return img
 
 
+# All preprocess* functions scale the image by this factor before OCR.
+# extract_text() divides returned bboxes by this value so callers always
+# receive coordinates in the original (unscaled) image space.
+_PREPROCESS_SCALE: float = 2.0
+
+# Shared EasyOCR readtext parameters used by extract_text and translate_image.
+# Centralised here so a single change propagates everywhere.
+_READ_KWARGS: dict = dict(
+    width_ths=1e4,      # merge wide text blocks into single lines
+    add_margin=0.1,
+    low_text=0.1,
+    text_threshold=0.8,
+    paragraph=False,
+)
+
+
 def preprocess(img: np.ndarray) -> np.ndarray:
     """Scale 2x (INTER_CUBIC) and convert to grayscale for better OCR accuracy."""
-    scaled = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    fx = fy = _PREPROCESS_SCALE
+    scaled = cv2.resize(img, None, fx=fx, fy=fy, interpolation=cv2.INTER_CUBIC)
     return cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
 
 
@@ -105,7 +122,7 @@ def preprocess_enhanced(img: np.ndarray) -> np.ndarray:
     CRAFT+CRNN pipeline uses gradient magnitude in its feature maps, so converting
     to pure black/white removes information the model relies on.
     """
-    scaled = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
+    scaled = cv2.resize(img, None, fx=_PREPROCESS_SCALE, fy=_PREPROCESS_SCALE, interpolation=cv2.INTER_LANCZOS4)
     gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
     denoised = cv2.fastNlMeansDenoising(gray, h=5, templateWindowSize=7, searchWindowSize=21)
     clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
@@ -158,7 +175,7 @@ def preprocess_discord(img: np.ndarray) -> np.ndarray:
       dark-structure detector unreliable. On very short images (single chat
       lines), the kernel would match actual character strokes spanning the width.
     """
-    scaled = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
+    scaled = cv2.resize(img, None, fx=_PREPROCESS_SCALE, fy=_PREPROCESS_SCALE, interpolation=cv2.INTER_LANCZOS4)
     gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
     is_dark = _is_dark_mode(gray)
     if is_dark:
@@ -181,7 +198,7 @@ def preprocess_otsu(img: np.ndarray) -> np.ndarray:
     that EasyOCR's CRAFT feature maps can use — test against baseline before
     adopting as default.
     """
-    scaled = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    scaled = cv2.resize(img, None, fx=_PREPROCESS_SCALE, fy=_PREPROCESS_SCALE, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return binary
@@ -194,7 +211,7 @@ def preprocess_light_denoise(img: np.ndarray) -> np.ndarray:
     and 8×8 CLAHE tiles blur character edges. h=2 preserves stroke detail;
     4×4 tiles localize contrast enhancement to actual character regions.
     """
-    scaled = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
+    scaled = cv2.resize(img, None, fx=_PREPROCESS_SCALE, fy=_PREPROCESS_SCALE, interpolation=cv2.INTER_LANCZOS4)
     gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
     denoised = cv2.fastNlMeansDenoising(gray, h=2, templateWindowSize=7, searchWindowSize=21)
     clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(4, 4))
@@ -212,7 +229,7 @@ def preprocess_bilateral(img: np.ndarray) -> np.ndarray:
     treats edges and flat regions equally.
     d=9, sigmaColor=75, sigmaSpace=75 gives moderate edge-preserving smoothing.
     """
-    scaled = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
+    scaled = cv2.resize(img, None, fx=_PREPROCESS_SCALE, fy=_PREPROCESS_SCALE, interpolation=cv2.INTER_LANCZOS4)
     gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
     filtered = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
     clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(4, 4))
@@ -220,6 +237,17 @@ def preprocess_bilateral(img: np.ndarray) -> np.ndarray:
     blurred = cv2.GaussianBlur(contrast, (0, 0), sigmaX=3)
     sharpened = cv2.addWeighted(contrast, 1.3, blurred, -0.3, 0)
     return sharpened
+
+
+def _scale_bbox(bbox: list) -> list:
+    """Divide all bbox corner coordinates by _PREPROCESS_SCALE.
+
+    extract_text* functions run OCR on a scaled image; this maps the returned
+    coordinates back to the original (unscaled) image space so callers never
+    need to know what scale factor preprocessing used.
+    """
+    s = _PREPROCESS_SCALE
+    return [[pt[0] / s, pt[1] / s] for pt in bbox]
 
 
 def extract_text(source: str | Path | np.ndarray) -> list[dict]:
@@ -242,20 +270,13 @@ def extract_text(source: str | Path | np.ndarray) -> list[dict]:
         img = load_image_from_path(source)
 
     processed = preprocess(img)
-    read_kwargs = dict(
-        width_ths=1e4,      # merge wide text blocks into single lines
-        add_margin=0.1,
-        low_text=0.1,
-        text_threshold=0.8,
-        paragraph=False,
-    )
 
     # Each CJK script requires its own reader. Run all three and pick the
     # one with the highest average confidence.
     candidates = [
-        _get_reader_zh().readtext(processed, **read_kwargs),
-        _get_reader_ja().readtext(processed, **read_kwargs),
-        _get_reader_ko().readtext(processed, **read_kwargs),
+        _get_reader_zh().readtext(processed, **_READ_KWARGS),
+        _get_reader_ja().readtext(processed, **_READ_KWARGS),
+        _get_reader_ko().readtext(processed, **_READ_KWARGS),
     ]
 
     def _avg_conf(raw):
@@ -272,7 +293,7 @@ def extract_text(source: str | Path | np.ndarray) -> list[dict]:
         segments.append({
             "text": text,
             "confidence": round(confidence, 4),
-            "bbox": bbox,
+            "bbox": _scale_bbox(bbox),
             "_top_y": min(pt[1] for pt in bbox),
         })
 
@@ -345,7 +366,7 @@ def extract_text_hinted(
         segments.append({
             "text": text,
             "confidence": round(confidence, 4),
-            "bbox": bbox,
+            "bbox": _scale_bbox(bbox),
             "_top_y": min(pt[1] for pt in bbox),
         })
     segments.sort(key=lambda s: s["_top_y"])

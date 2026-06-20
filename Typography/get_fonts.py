@@ -26,6 +26,109 @@ PREVIEW_HEIGHT = 600
 PREVIEW_BG = "white"
 PREVIEW_TEXT_COLOR = "black"
 
+# Sizes rendered for each text corpus page (pt)
+TEXT_PAGE_SIZES = [20, 32, 48]
+
+# Additional tile-grid render sizes beyond the default FONT_SIZE=64
+# Produces {block}_s{size}_{page}_{family}-{style}.png alongside the default tiles
+EXTRA_TILE_SIZES = [32, 96]
+
+# Script-specific running-text samples for non-Latin Unicode blocks.
+# Each entry is keyed by the matching UNICODE_BLOCKS name; skipped if the font
+# has no cmap coverage for that block.
+SCRIPT_PANGRAMS = {
+    "cyrillic": [
+        "Съешь же ещё этих мягких французских булок, да выпей же чаю.",
+        "Широкая электрификация южных губерний даст мощный толчок подъёму.",
+        "В чащах юга жил бы цитрус? Да, но фальшивый экземпляр!",
+    ],
+    "greek": [
+        "Θέλει αρετή και τόλμη η ελευθερία. (Ανδρέας Κάλβος)",
+        "Ξεσκεπάζω την ψυχοφθόρα βδελυγμία.",
+        "Αβγδεζηθικλμνξοπρστυφχψω  ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ",
+    ],
+    "arabic": [
+        "نص حكيم له سر قاطع وذو شأن عظيم مكتوب على ثوب أبيض.",
+        "أبجد هوز حطي كلمن سعفص قرشت ثخذ ضظغ",
+    ],
+    "hebrew": [
+        "דג סקרן שט בים מאוכזב ולפתע מצא לו חברה.",
+        "אבגדהוזחטיכלמנסעפצקרשת",
+    ],
+    "devanagari": [
+        "ऋषियों को सताने वाले दुष्ट राक्षसों के राजा रावण का सर्वनाश।",
+        "अआइईउऊएऐओऔकखगघङचछजझञटठडढणतथदधन",
+    ],
+    "thai": [
+        "เป็นมนุษย์สุดประเสริฐเลิศคุณค่า กว่าบรรดาฝูงสัตว์เดรัจฉาน",
+        "กขคงจฉชซญดตถทธนบปผฝพฟภมยรลวศษสหอฮ",
+    ],
+    "georgian": [
+        "გთხოვთ ახლავე გაიაროთ რეგისტრაცია Unicode-ის კონფერენციაზე.",
+        "აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ",
+    ],
+    "armenian": [
+        "Բոլոր մարդիկ ծնվում են ազատ ու հավասար իրենց արժանապատվությամբ։",
+        "ԱԲԳԴԵԶԷԸԹԺԻԼԽԾԿՀՁՂՃՄՅՆՇՈՉՊՋՌՍՎՏՐՑՒՓՔՕՖ",
+    ],
+}
+
+# Running-text corpora: each value is a list of lines to render on one page
+TEXT_CORPORA = {
+    "pangrams": [
+        "The quick brown fox jumps over the lazy dog.",
+        "Pack my box with five dozen liquor jugs.",
+        "Sphinx of black quartz, judge my vow.",
+        "How vexingly quick daft zebras jump!",
+        "Jackdaws love my big sphinx of quartz.",
+        "The five boxing wizards jump quickly.",
+        "Waltz, bad nymph, for quick jigs vex!",
+        "Bright vixens jump; dozy fowl quack.",
+        "Blowzy night-frumps vex'd Jack Q.",
+        "Cwm fjord bank glyphs vext quiz.",
+    ],
+    "lorem": [
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit,",
+        "sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+        "Ut enim ad minim veniam, quis nostrud exercitation ullamco",
+        "laboris nisi ut aliquip ex ea commodo consequat. Duis aute",
+        "irure dolor in reprehenderit in voluptate velit esse cillum",
+        "dolore eu fugiat nulla pariatur. Excepteur sint occaecat",
+        "cupidatat non proident, sunt in culpa qui officia deserunt",
+        "mollit anim id est laborum. Sed ut perspiciatis unde omnis",
+        "iste natus error sit voluptatem accusantium doloremque.",
+    ],
+    "numerals": [
+        "0  1  2  3  4  5  6  7  8  9",
+        "1,234,567.89     $9.99     €1.50     £2.75     ¥300",
+        "100% + 50% = 150%     −273.15 °C     +3.14",
+        "3.14159265   2.71828182   1.61803399   0.57721566",
+        "Phone: (555) 867-5309     ZIP: 10001-0001",
+        "2024-01-01   12:30:59   UTC−05:00",
+        "#1 Best Seller — Vol. III, No. 7",
+        "Section 4.2.1: see pp. 99–104 & App. B",
+    ],
+    "mixed_case": [
+        "ABCDEFGHIJKLM   NOPQRSTUVWXYZ",
+        "abcdefghijklm   nopqrstuvwxyz",
+        "Aa Bb Cc Dd Ee Ff Gg Hh Ii Jj Kk Ll Mm",
+        "Nn Oo Pp Qq Rr Ss Tt Uu Vv Ww Xx Yy Zz",
+        "Hello, World!   Welcome to Typography.",
+        "CamelCase   PascalCase   snake_case   kebab-case",
+        "Title Case   SCREAMING SNAKE   ALL CAPS   lower",
+        "The QUICK Brown FOX Jumps OVER The LAZY Dog.",
+    ],
+    "punctuation": [
+        ". , ; : ! ? ' \" ( ) [ ] { } < > / \\",
+        "— – - ... · • † ‡ § ¶ @ # % ^ & * ~ ` |",
+        "© ® ™ ° ± × ÷ = ≠ ≈ ∞ √ ∑ ∏ Δ",
+        "\"Quoted text,\" she said. 'Indeed!' he replied.",
+        "It’s a contraction—it’s a test. (See footnote¹.)",
+        "Price: $1,299.00*   *Taxes & fees not included.",
+        "Hello—world! [Brackets], {Braces}, <Angles>.",
+    ],
+}
+
 UNICODE_BLOCKS = {
     "latin": (0x0000, 0x024F),
     "greek": (0x0370, 0x03FF),
@@ -231,6 +334,68 @@ def render_preview_image(font, output_dir, family, style):
 
 
 # ============================================================
+# TEXT PAGE RENDERING (RUNNING TEXT, MULTIPLE SIZES)
+# ============================================================
+
+def _filter_to_cmap(text, cmap_set):
+    return "".join(ch if ord(ch) in cmap_set else " " for ch in text)
+
+
+def render_text_page(font_path, corpus_name, lines, size, cmap_set, output_dir, family, style, dark=False):
+    try:
+        font = ImageFont.truetype(font_path, size)
+    except Exception:
+        return
+
+    bg  = "#1e1e1e" if dark else "white"
+    fg  = "white"   if dark else "black"
+    img = Image.new("RGB", (PAGE_WIDTH, PAGE_HEIGHT), bg)
+    draw = ImageDraw.Draw(img)
+
+    # Measure actual line height from a reference glyph
+    bbox = font.getbbox("Ag")
+    line_height = (bbox[3] - bbox[1]) + max(6, size // 4)
+
+    y = MARGIN
+    rendered_chars = 0
+
+    for line in lines:
+        if y + line_height >= PAGE_HEIGHT - MARGIN:
+            break
+        filtered = _filter_to_cmap(line, cmap_set)
+        if filtered.strip():
+            draw.text((MARGIN, y), filtered, font=font, fill=fg)
+            rendered_chars += len(filtered.strip())
+        y += line_height
+
+    if rendered_chars < 10:
+        return  # Skip pages with negligible content (e.g. CJK-only fonts on Latin corpus)
+
+    mode  = "dark" if dark else "light"
+    fname = f"text_{corpus_name}_{size:02}_{mode}_{family}-{style}.png"
+    img.save(os.path.join(output_dir, fname))
+
+
+def render_text_pages(font_path, cmap_set, output_dir, family, style):
+    for corpus_name, lines in TEXT_CORPORA.items():
+        for size in TEXT_PAGE_SIZES:
+            for dark in (False, True):
+                render_text_page(font_path, corpus_name, lines, size, cmap_set, output_dir, family, style, dark=dark)
+
+
+def render_script_pages(font_path, cmap_set, output_dir, family, style):
+    for block_name, lines in SCRIPT_PANGRAMS.items():
+        if block_name not in UNICODE_BLOCKS:
+            continue
+        start, end = UNICODE_BLOCKS[block_name]
+        if not font_supports_block_cmap(cmap_set, start, end):
+            continue
+        for size in TEXT_PAGE_SIZES:
+            for dark in (False, True):
+                render_text_page(font_path, block_name, lines, size, cmap_set, output_dir, family, style, dark=dark)
+
+
+# ============================================================
 # BLOCK RENDERING (CMAP-BASED SUPPORT)
 # ============================================================
 
@@ -313,6 +478,8 @@ def render_font_images(font_path, raw_font_name, update=False, style_folders=Fal
         return
 
     render_preview_image(font, output_dir, family, style)
+    render_text_pages(font_path, cmap_set, output_dir, family, style)
+    render_script_pages(font_path, cmap_set, output_dir, family, style)
 
     for block_name, (start, end) in UNICODE_BLOCKS.items():
 
@@ -321,7 +488,17 @@ def render_font_images(font_path, raw_font_name, update=False, style_folders=Fal
             continue
 
         chars = [chr(cp) for cp in range(start, end + 1) if is_printable(cp)]
+
+        # Default tile size
         render_block(font, chars, cmap_set, output_dir, block_name, family, style)
+
+        # Extra tile sizes — filename uses block_name_s{size} prefix to avoid collision
+        for tile_size in EXTRA_TILE_SIZES:
+            try:
+                font_at_size = ImageFont.truetype(font_path, tile_size)
+            except Exception:
+                continue
+            render_block(font_at_size, chars, cmap_set, output_dir, f"{block_name}_s{tile_size}", family, style)
 
 
 # ============================================================

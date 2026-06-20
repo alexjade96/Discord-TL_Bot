@@ -39,6 +39,14 @@ from translate_video import translate_video  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "0-Data" / "Text" / "training"))
 from collect_text import save_submission as save_text_submission  # noqa: E402
 
+# Logging rotation settings
+_LOG_MAX_BYTES    = 32 * 1024 * 1024   # 32 MiB per log file
+_LOG_BACKUP_COUNT = 5                  # number of rotated files to retain
+
+# Discord message length cap; actual limit is 2000 but we leave a 100-char
+# safety margin for the truncation notice appended below.
+_DISCORD_MSG_LIMIT = 1900
+
 # Logging handler setup
 logger = logging.getLogger("discord")
 logger.setLevel(logging.DEBUG)
@@ -50,8 +58,8 @@ os.makedirs(logdir, exist_ok=True)
 handler = logging.handlers.RotatingFileHandler(
     filename=f"{logdir}/TL_Bot_{today}.log",
     encoding="utf-8",
-    maxBytes=32 * 1024 * 1024,  # 32 MiB
-    backupCount=5,
+    maxBytes=_LOG_MAX_BYTES,
+    backupCount=_LOG_BACKUP_COUNT,
 )
 dt_fmt = "%Y-%m-%d %H:%M:%S"
 formatter = logging.Formatter(
@@ -313,8 +321,8 @@ async def _run_text_translate(
         parts.append(truncation_note)
 
     final_msg = "\n\n".join(parts)
-    if len(final_msg) > 1900:
-        final_msg = final_msg[:1900] + "\n_[message truncated]_"
+    if len(final_msg) > _DISCORD_MSG_LIMIT:
+        final_msg = final_msg[:_DISCORD_MSG_LIMIT] + "\n_[message truncated]_"
     await status.edit(content=final_msg)
 
     _collect_text(auto_result, text, to_lang, username, filename=filename)
@@ -456,8 +464,8 @@ async def _handle_audio(
                 parts.append(analysis)
 
         final_msg = "\n\n".join(parts)
-        if len(final_msg) > 1900:
-            final_msg = final_msg[:1900] + "\n_[message truncated]_"
+        if len(final_msg) > _DISCORD_MSG_LIMIT:
+            final_msg = final_msg[:_DISCORD_MSG_LIMIT] + "\n_[message truncated]_"
         await status.edit(content=final_msg)
 
     except Exception as e:
@@ -519,8 +527,8 @@ async def _handle_video(
                 parts.append(analysis)
 
         final_msg = "\n\n".join(parts)
-        if len(final_msg) > 1900:
-            final_msg = final_msg[:1900] + "\n_[message truncated]_"
+        if len(final_msg) > _DISCORD_MSG_LIMIT:
+            final_msg = final_msg[:_DISCORD_MSG_LIMIT] + "\n_[message truncated]_"
         await status.edit(content=final_msg)
 
     except Exception as e:

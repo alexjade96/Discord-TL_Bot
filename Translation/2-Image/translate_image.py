@@ -38,17 +38,10 @@ from ocr import (
     load_image_from_url,
     load_image_from_path,
     preprocess,
+    _READ_KWARGS,
 )
 sys.path.insert(0, str(Path(__file__).parent.parent / "0-Data" / "Image" / "training"))
 from collect_image import save_submission  # noqa: E402
-
-_READ_KWARGS = dict(
-    width_ths=1e4,
-    add_margin=0.1,
-    low_text=0.1,
-    text_threshold=0.8,
-    paragraph=False,
-)
 
 
 def _combined_score(ocr_conf: float, lang_conf: float) -> float:
@@ -187,6 +180,10 @@ def translate_image(
 
 if __name__ == "__main__":
     import argparse
+    import io as _io
+    import sys as _sys
+    _sys.stdout = _io.TextIOWrapper(_sys.stdout.buffer, encoding="utf-8", errors="replace")
+    _sys.stderr = _io.TextIOWrapper(_sys.stderr.buffer, encoding="utf-8", errors="replace")
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).parent.parent.parent / ".env")
 

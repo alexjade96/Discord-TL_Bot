@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from extract_audio import extract_audio, _write_wav
+from extract_audio import extract_audio, _write_wav, _TARGET_SAMPLE_RATE
 
 
 # ---------------------------------------------------------------------------
@@ -149,4 +149,4 @@ class TestExtractAudio:
         resampler = _make_mock_resampler()
         mock_resampler_cls.return_value = resampler
         extract_audio(b"\x00" * 16)
-        mock_resampler_cls.assert_called_once_with(format="s16", layout="mono", rate=16000)
+        mock_resampler_cls.assert_called_once_with(format="s16", layout="mono", rate=_TARGET_SAMPLE_RATE)

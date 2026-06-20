@@ -104,6 +104,22 @@ Shared helpers:
 
 - **`WHISPER_LOCAL.md`** — Step-by-step guide for migrating to a locally fine-tuned Whisper model: when to switch, dependencies, local-first inference pattern (matching `translate_text.py`), fine-tuning with `Seq2SeqTrainer`, deploy to `~/.tl-bot/whisper/`, corrections schema.
 
+### Video Translation & Audio Extraction (`Translation/4-Video/`)
+
+- **`extract_audio.py`** — Extracts the audio track from a video file using PyAV:
+  - `extract_audio(source)` — public API; accepts bytes, local file path (str or Path), or URL string.
+  - Decodes the first audio stream and resamples to 16 kHz mono WAV using `av.AudioResampler(format="s16", layout="mono", rate=16000)`.
+  - `_write_wav(pcm, sample_rate)` — manually constructs a RIFF/WAVE header + int16 PCM body; no external WAV library needed.
+  - PyAV bundles its own compiled FFmpeg libraries — **no system ffmpeg binary required**.
+  - Raises `RuntimeError` if no audio stream is found or decoding produces no frames.
+
+- **`translate_video.py`** — Full video pipeline (extract audio → transcribe → translate → collect):
+  - `translate_video(source, from_lang, to_lang, filename, username)` — public API.
+  - Delegates to `extract_audio` → `transcribe` (Whisper via 3-Audio) → `translate_text` (via 1-Text).
+  - Result dict uses `original_text` (the transcript) keyed to match `_fmt_result(ocr=True)`.
+  - Returns `{original_text, translated_text, source_language, confidence, method, collected}`.
+  - Collection via `collect_video.save_submission()` is non-fatal.
+
 ### Image Translation (`Translation/2-Image/`)
 
 - **`ocr.py`** — EasyOCR pipeline with OpenCV preprocessing:
@@ -165,6 +181,13 @@ Translation/0-Data/
     training/
       collect_audio.py          ← save_submission(), dataset_stats()
       (dataset.py / train.py / deploy.py — not yet created; see Translation/3-Audio/WHISPER_LOCAL.md)
+  Video/
+    data/
+      video_submissions.jsonl   ← transcript + translation submissions + correction fields
+    training/
+      collect_video.py          ← save_submission(), dataset_stats(), load_submissions()
+    testing/
+      demo.py                   ← full video pipeline demo (gTTS → MKV → extract → transcribe → translate → collect)
 ```
 
 #### `labels.jsonl` schema
@@ -223,6 +246,27 @@ Whether a correction exists is inferred from data — `correct_text != null` mea
 ```
 
 Deduplication is by SHA-1 of the transcript text. `correct_transcript != null` signals an ASR correction; `correct_translation != null` signals a translation correction.
+
+#### `video_submissions.jsonl` schema
+
+```jsonc
+{
+  "text_hash": "<sha1[:16] of transcript>",
+  "filename": "clip.mp4",
+  "transcript": "<Whisper output>",
+  "correct_transcript": null,     // manual ASR correction
+  "translated_text": "<translation>",
+  "correct_translation": null,    // manual translation correction
+  "source_language": "ko",
+  "target_language": "en",
+  "confidence": 0.95,
+  "method": "whisper-hf",         // 'whisper-hf' | 'whisper-local' (after local deploy)
+  "username": "discorduser",
+  "timestamp": "2026-..."
+}
+```
+
+Deduplication is by SHA-1 of the transcript text, same as audio. Schema is identical to `audio_submissions.jsonl` except `filename` references the original video file rather than an audio file.
 
 #### Text training workflow
 
@@ -307,6 +351,20 @@ cd Translation/0-Data/Image/testing/
 .venv\Scripts\python.exe demo.py --no-collect    # skip saving to data/
 ```
 
+#### Video testing tools
+
+```bash
+cd Translation/0-Data/Video/testing/
+
+# Full pipeline demo (synthesizes speech via gTTS, wraps in MKV, runs full video pipeline)
+.venv\Scripts\python.exe demo.py
+.venv\Scripts\python.exe demo.py --no-collect     # skip saving to data/
+.venv\Scripts\python.exe demo.py --tgt fr         # translate to French
+.venv\Scripts\python.exe demo.py --save-videos    # write generated MKVs to data/demo_output/
+```
+
+Requires internet access (gTTS for speech synthesis + HF Whisper API for transcription). `wrap_audio_in_mkv()` uses PyAV to encode gTTS MP3 into a Matroska container using the libopus codec at 48 kHz — no system ffmpeg needed.
+
 ### Research Notebooks
 
 Exploratory work; production pipelines are in the `.py` modules above:
@@ -329,7 +387,7 @@ Install from `requirements.txt`:
 pip install -r requirements.txt
 ```
 
-Key packages: `discord.py`, `python-dotenv`, `easyocr`, `opencv-python`, `wordninja`, `langdetect`, `lingua-language-detector`, `huggingface_hub`, `transformers`, `torch`, `pillow`, `fonttools`, `pytest`.
+Key packages: `discord.py`, `python-dotenv`, `easyocr`, `opencv-python`, `wordninja`, `langdetect`, `lingua-language-detector`, `huggingface_hub`, `transformers`, `torch`, `pillow`, `fonttools`, `pytest`, `av` (PyAV — bundles its own FFmpeg libs, no system ffmpeg needed).
 
 `lmdb` is required only for the training pipeline (`pip install lmdb`); it is not in `requirements.txt`.
 
@@ -341,7 +399,7 @@ Always run scripts with `.venv\Scripts\python.exe` — the system Python lacks `
 - **Secrets**: `DISCORD_BOT_TOKEN` and `HF_TOKEN` must never be hardcoded; load from `.env` (gitignored).
 - **No git co-author tags**: Do not add `Co-Authored-By: Claude` lines to commits in this repo.
 - **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Image/training/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, or model checkpoints.
-- **Test suite**: `pytest` tests exist under `Translation/2-Image/tests/` and `Translation/1-Text/tests/`. Run with `pytest` from the repo root.
+- **Test suite**: `pytest` tests exist under `Translation/1-Text/tests/`, `Translation/2-Image/tests/`, `Translation/3-Audio/tests/`, and `Translation/4-Video/tests/`. Run with `pytest` from the repo root. All four suites use mocks — no network calls required. (84 tests pass, 1 skips if `test_image.png` is absent.)
 - **Preprocessing variants**: All six variants are available in `ocr.py`; `preprocess()` (baseline) is the production default. Use `compare_preprocess.py` to evaluate before switching. `light_denoise` is the most consistent alternative.
 - **Public API surface**: `translate_text()` in `translate_text.py` is the public entry point; `_translate_to_english()` and `_translate_from_english()` are private implementation details.
 - **Collection is non-fatal**: `collect_image.save_submission()`, `collect_text.save_submission()`, and `collect_audio.save_submission()` are all wrapped in try/except — a collection failure must never prevent the translation response from being sent.
