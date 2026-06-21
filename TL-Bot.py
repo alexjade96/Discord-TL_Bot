@@ -2,6 +2,7 @@
 # Discord bot for handling image/text translations
 
 import asyncio
+import io
 import os
 import sys
 import datetime
@@ -25,19 +26,26 @@ from detect import analyze_segments  # noqa: E402
 # Add image translation package to path
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "2-Image"))
 from translate_image import translate_image  # noqa: E402
-from ocr import extract_text_combined  # noqa: E402
+from ocr import extract_text_combined, extract_text  # noqa: E402
+from synthesize_image import synthesize_image, synthesize_text_to_image  # noqa: E402
 
 # Add audio translation package to path
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "3-Audio"))
 from translate_audio import translate_audio  # noqa: E402
+from synthesize_audio import synthesize as synthesize_speech  # noqa: E402
 
 # Add video translation package to path
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "4-Video"))
 from translate_video import translate_video  # noqa: E402
+from synthesize_video import synthesize_video  # noqa: E402
 
 # Text collection
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "0-Data" / "Text" / "training"))
 from collect_text import save_submission as save_text_submission  # noqa: E402
+
+# Synthesized output collection
+sys.path.insert(0, str(Path(__file__).parent / "Translation" / "0-Data" / "Synthesized"))
+from collect_synthesized import save_synthesis as save_synthesis_output  # noqa: E402
 
 # Logging rotation settings
 _LOG_MAX_BYTES    = 32 * 1024 * 1024   # 32 MiB per log file
@@ -154,15 +162,20 @@ async def _fetch_header(url: str, n: int = 16) -> bytes:
     return b""
 
 
-def _parse_translate_flags(cmd: str) -> tuple[str, str | None, str | None, bool, list[str]]:
-    """Parse --from, --to, and --analyze flags out of a /translate command string.
+_SYNTHESIZE_TYPES = ("audio", "image", "text", "video")
 
-    Returns (remaining_text, from_lang, to_lang, analyze, error_messages).
+
+def _parse_translate_flags(cmd: str) -> tuple[str, str | None, str | None, bool, str | None, list[str]]:
+    """Parse --from, --to, --analyze, and --synthesize flags out of a /translate command string.
+
+    Returns (remaining_text, from_lang, to_lang, analyze, synthesize_type, error_messages).
+    synthesize_type is one of 'audio', 'image', 'text', or None if the flag was not given.
     remaining_text is the command string with all recognized flags removed.
     """
     tokens = cmd.split()
     from_lang = to_lang = None
     analyze = False
+    synthesize: str | None = None
     errors: list[str] = []
     remaining: list[str] = []
     i = 0
@@ -184,10 +197,19 @@ def _parse_translate_flags(cmd: str) -> tuple[str, str | None, str | None, bool,
         elif tokens[i] == "--analyze":
             analyze = True
             i += 1
+        elif tokens[i] == "--synthesize":
+            if i + 1 < len(tokens) and tokens[i + 1] in _SYNTHESIZE_TYPES:
+                synthesize = tokens[i + 1]
+                i += 2
+            else:
+                errors.append(
+                    f"`--synthesize` requires a type: {', '.join(f'`{t}`' for t in _SYNTHESIZE_TYPES)}."
+                )
+                i += 1
         else:
             remaining.append(tokens[i])
             i += 1
-    return " ".join(remaining), from_lang, to_lang, analyze, errors
+    return " ".join(remaining), from_lang, to_lang, analyze, synthesize, errors
 
 
 def _is_same_language(from_lang: str | None, to_lang: str | None) -> bool:
@@ -280,6 +302,61 @@ def _collect_text(
         logger.warning("Failed to save text to training dataset", exc_info=True)
 
 
+async def _send_synthesized(
+    channel: discord.abc.Messageable,
+    translated_text: str,
+    synthesize_type: str,
+    to_lang: str | None,
+    *,
+    username: str,
+    source_type: str,
+) -> None:
+    """Send a synthesized output file for 'audio' or 'text' synthesis types.
+
+    'audio' → MP3 via gTTS.  'text' → UTF-8 .txt file.
+    'image' and 'video' are handled per-handler because they require source media.
+    Saves the output bytes to 0-Data/Synthesized/<type>/data/ (non-fatal).
+    """
+    if synthesize_type == "audio":
+        try:
+            audio_bytes = await asyncio.to_thread(
+                synthesize_speech, translated_text, to_lang or "en"
+            )
+            await channel.send(
+                "**Synthesized translation:**",
+                file=discord.File(io.BytesIO(audio_bytes), filename="translated.mp3"),
+            )
+            try:
+                save_synthesis_output(
+                    audio_bytes, "audio",
+                    translated_text=translated_text,
+                    source_type=source_type,
+                    target_language=to_lang or "en",
+                    username=username,
+                )
+            except Exception:
+                logger.warning("Failed to save audio synthesis output", exc_info=True)
+        except Exception as e:
+            logger.warning("Audio synthesis failed: %s", e)
+            await channel.send("_Audio synthesis failed._")
+    elif synthesize_type == "text":
+        txt_bytes = translated_text.encode("utf-8")
+        await channel.send(
+            "**Synthesized translation:**",
+            file=discord.File(io.BytesIO(txt_bytes), filename="translated.txt"),
+        )
+        try:
+            save_synthesis_output(
+                txt_bytes, "text",
+                translated_text=translated_text,
+                source_type=source_type,
+                target_language=to_lang or "en",
+                username=username,
+            )
+        except Exception:
+            logger.warning("Failed to save text synthesis output", exc_info=True)
+
+
 async def _run_text_translate(
     text: str,
     from_lang: str | None,
@@ -292,6 +369,7 @@ async def _run_text_translate(
     passthrough_extra: str = "",
     truncation_note: str = "",
     filename: str = "",
+    synthesize: str | None = None,
 ) -> None:
     """Run the auto+hint text translation flow and edit status with the result.
 
@@ -327,12 +405,42 @@ async def _run_text_translate(
 
     _collect_text(auto_result, text, to_lang, username, filename=filename)
 
+    if synthesize and auto_result.get("translated_text"):
+        if synthesize == "image":
+            try:
+                synth_bytes = await asyncio.to_thread(
+                    synthesize_text_to_image, auto_result["translated_text"], to_lang or "en"
+                )
+                await status.channel.send(
+                    "**Synthesized translation:**",
+                    file=discord.File(io.BytesIO(synth_bytes), filename="translated.png"),
+                )
+                try:
+                    save_synthesis_output(
+                        synth_bytes, "image",
+                        translated_text=auto_result["translated_text"],
+                        source_type="text",
+                        target_language=to_lang or "en",
+                        username=username,
+                    )
+                except Exception:
+                    logger.warning("Failed to save image synthesis output", exc_info=True)
+            except Exception as e:
+                logger.warning("Image synthesis failed: %s", e)
+                await status.channel.send("_Image synthesis failed._")
+        elif synthesize == "video":
+            await status.channel.send("_Video synthesis is only supported for video input._")
+        else:
+            await _send_synthesized(status.channel, auto_result["translated_text"], synthesize, to_lang,
+                                    username=username, source_type="text")
+
 
 async def _handle_image(
     attachment: discord.Attachment,
     from_lang: str | None,
     to_lang: str | None,
     analyze: bool,
+    synthesize: str | None,
     channel: discord.abc.Messageable,
     author_name: str,
 ) -> None:
@@ -405,6 +513,41 @@ async def _handle_image(
                 if analysis:
                     parts.append(analysis)
             await status.edit(content="\n\n".join(parts))
+
+            if synthesize and auto["translated_text"] and auto["method"] != "none":
+                if synthesize == "image":
+                    try:
+                        segments = await asyncio.to_thread(extract_text, attachment.url)
+                        if segments:
+                            synth_bytes = await asyncio.to_thread(
+                                synthesize_image, attachment.url, segments,
+                                auto["translated_text"], to_lang or "en",
+                            )
+                            await channel.send(
+                                "**Synthesized translation:**",
+                                file=discord.File(io.BytesIO(synth_bytes), filename="translated.png"),
+                            )
+                            try:
+                                save_synthesis_output(
+                                    synth_bytes, "image",
+                                    translated_text=auto["translated_text"],
+                                    source_type="image",
+                                    target_language=to_lang or "en",
+                                    username=author_name,
+                                )
+                            except Exception:
+                                logger.warning("Failed to save image synthesis output", exc_info=True)
+                        else:
+                            await channel.send("_No text regions found for image synthesis._")
+                    except Exception as e:
+                        logger.warning("Image synthesis failed: %s", e)
+                        await channel.send("_Image synthesis failed._")
+                elif synthesize == "video":
+                    await channel.send("_Video synthesis is only supported for video input._")
+                else:
+                    await _send_synthesized(channel, auto["translated_text"], synthesize, to_lang,
+                                            username=author_name, source_type="image")
+
     except Exception as e:
         logger.exception(f"Image translation error: {e}")
         await status.edit(content="Image translation failed. Please try again later.")
@@ -415,6 +558,7 @@ async def _handle_audio(
     from_lang: str | None,
     to_lang: str | None,
     analyze: bool,
+    synthesize: str | None,
     channel: discord.abc.Messageable,
     author_name: str,
 ) -> None:
@@ -468,6 +612,35 @@ async def _handle_audio(
             final_msg = final_msg[:_DISCORD_MSG_LIMIT] + "\n_[message truncated]_"
         await status.edit(content=final_msg)
 
+        if synthesize and result["translated_text"]:
+            if synthesize == "image":
+                try:
+                    synth_bytes = await asyncio.to_thread(
+                        synthesize_text_to_image, result["translated_text"], to_lang or "en"
+                    )
+                    await channel.send(
+                        "**Synthesized translation:**",
+                        file=discord.File(io.BytesIO(synth_bytes), filename="translated.png"),
+                    )
+                    try:
+                        save_synthesis_output(
+                            synth_bytes, "image",
+                            translated_text=result["translated_text"],
+                            source_type="audio",
+                            target_language=to_lang or "en",
+                            username=author_name,
+                        )
+                    except Exception:
+                        logger.warning("Failed to save image synthesis output", exc_info=True)
+                except Exception as e:
+                    logger.warning("Image synthesis failed: %s", e)
+                    await channel.send("_Image synthesis failed._")
+            elif synthesize == "video":
+                await channel.send("_Video synthesis is only supported for video input._")
+            else:
+                await _send_synthesized(channel, result["translated_text"], synthesize, to_lang,
+                                        username=author_name, source_type="audio")
+
     except Exception as e:
         logger.exception(f"Audio translation error: {e}")
         await status.edit(content="Audio transcription failed. Please try again later.")
@@ -478,6 +651,7 @@ async def _handle_video(
     from_lang: str | None,
     to_lang: str | None,
     analyze: bool,
+    synthesize: str | None,
     channel: discord.abc.Messageable,
     author_name: str,
 ) -> None:
@@ -531,6 +705,58 @@ async def _handle_video(
             final_msg = final_msg[:_DISCORD_MSG_LIMIT] + "\n_[message truncated]_"
         await status.edit(content=final_msg)
 
+        if synthesize and result["translated_text"]:
+            if synthesize == "image":
+                try:
+                    synth_bytes = await asyncio.to_thread(
+                        synthesize_text_to_image, result["translated_text"], to_lang or "en"
+                    )
+                    await channel.send(
+                        "**Synthesized translation:**",
+                        file=discord.File(io.BytesIO(synth_bytes), filename="translated.png"),
+                    )
+                    try:
+                        save_synthesis_output(
+                            synth_bytes, "image",
+                            translated_text=result["translated_text"],
+                            source_type="video",
+                            target_language=to_lang or "en",
+                            username=author_name,
+                        )
+                    except Exception:
+                        logger.warning("Failed to save image synthesis output", exc_info=True)
+                except Exception as e:
+                    logger.warning("Image synthesis failed: %s", e)
+                    await channel.send("_Image synthesis failed._")
+            elif synthesize == "video":
+                try:
+                    await status.edit(content=final_msg + "\n_Synthesizing translated video..._")
+                    video_bytes = await asyncio.to_thread(
+                        synthesize_video, attachment.url, result["translated_text"], to_lang or "en"
+                    )
+                    await channel.send(
+                        "**Synthesized translation:**",
+                        file=discord.File(io.BytesIO(video_bytes), filename="translated.mkv"),
+                    )
+                    await status.edit(content=final_msg)
+                    try:
+                        save_synthesis_output(
+                            video_bytes, "video",
+                            translated_text=result["translated_text"],
+                            source_type="video",
+                            target_language=to_lang or "en",
+                            username=author_name,
+                        )
+                    except Exception:
+                        logger.warning("Failed to save video synthesis output", exc_info=True)
+                except Exception as e:
+                    logger.warning("Video synthesis failed: %s", e)
+                    await channel.send("_Video synthesis failed._")
+                    await status.edit(content=final_msg)
+            else:
+                await _send_synthesized(channel, result["translated_text"], synthesize, to_lang,
+                                        username=author_name, source_type="video")
+
     except Exception as e:
         logger.exception(f"Video translation error: {e}")
         await status.edit(content="Video translation failed. Please try again later.")
@@ -541,6 +767,7 @@ async def _handle_text_file(
     from_lang: str | None,
     to_lang: str | None,
     analyze: bool,
+    synthesize: str | None,
     channel: discord.abc.Messageable,
     author_name: str,
 ) -> None:
@@ -600,6 +827,7 @@ async def _handle_text_file(
                 if truncated else ""
             ),
             filename=attachment.filename,
+            synthesize=synthesize,
         )
 
     except discord.HTTPException as e:
@@ -615,6 +843,7 @@ async def _handle_text_inline(
     from_lang: str | None,
     to_lang: str | None,
     analyze: bool,
+    synthesize: str | None,
     channel: discord.abc.Messageable,
     author_name: str,
 ) -> None:
@@ -634,6 +863,7 @@ async def _handle_text_inline(
             text, from_lang, to_lang, analyze, status,
             username=author_name,
             passthrough_extra=f"**Detected text**:\n> {text}",
+            synthesize=synthesize,
         )
     except Exception as e:
         logger.exception(f"Translation error: {e}")
@@ -672,30 +902,35 @@ async def on_message(message):
             "/translate — Translate text or image\n"
             "  --from <language>  Hint the source language (also shows auto-detect result)\n"
             "  --to <language>    Set the output language (default: English)\n"
-            "  --analyze          Show detected language segments alongside the translation"
+            "  --analyze          Show detected language segments alongside the translation\n"
+            "  --synthesize <type>  Return a synthesized output file of the translation\n"
+            "      audio  → MP3 speech file (all input types)\n"
+            "      text   → plain .txt file (all input types)\n"
+            "      image  → translated PNG (image: text replaced in-place; other inputs: text on plain background)\n"
+            "      video  → MKV with original video and synthesized translated audio (video input only)"
         )
         return
 
     if msg.startswith("/translate"):
         cmd = msg[len("/translate"):].strip()
-        text_input, from_lang, to_lang, analyze, errors = _parse_translate_flags(cmd)
+        text_input, from_lang, to_lang, analyze, synthesize, errors = _parse_translate_flags(cmd)
         for err in errors:
             await message.channel.send(err)
 
         if message.attachments:
             for attachment in message.attachments:
                 if "image" in attachment.content_type:
-                    await _handle_image(attachment, from_lang, to_lang, analyze, message.channel, message.author.name)
+                    await _handle_image(attachment, from_lang, to_lang, analyze, synthesize, message.channel, message.author.name)
                 elif "audio" in attachment.content_type:
-                    await _handle_audio(attachment, from_lang, to_lang, analyze, message.channel, message.author.name)
+                    await _handle_audio(attachment, from_lang, to_lang, analyze, synthesize, message.channel, message.author.name)
                 elif "video" in attachment.content_type:
-                    await _handle_video(attachment, from_lang, to_lang, analyze, message.channel, message.author.name)
+                    await _handle_video(attachment, from_lang, to_lang, analyze, synthesize, message.channel, message.author.name)
                 elif "text" in attachment.content_type:
-                    await _handle_text_file(attachment, from_lang, to_lang, analyze, message.channel, message.author.name)
+                    await _handle_text_file(attachment, from_lang, to_lang, analyze, synthesize, message.channel, message.author.name)
                 else:
                     await message.channel.send(f"Unsupported file type: {attachment.url}.")
         else:
-            await _handle_text_inline(text_input, from_lang, to_lang, analyze, message.channel, message.author.name)
+            await _handle_text_inline(text_input, from_lang, to_lang, analyze, synthesize, message.channel, message.author.name)
         return
 
     await message.channel.send("Translate function not yet implemented, please stay tuned!")

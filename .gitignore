@@ -160,7 +160,9 @@ venv.bak/
 # Data directory
 data/
 logs/
-Typography/
+Datasets/
+font-dataset/
+windows-fonts/
 
 # Image files
 *.png
@@ -168,6 +170,13 @@ Typography/
 *.jpeg
 *.gif
 *.bmp
+
+# Synthesis test outputs (kept on disk for inspection, not committed)
+Translation/*/tests/outputs/
+
+# Audio / video outputs
+*.mp3
+*.mkv
 
 # PyTorch Model Checkpoint files
 checkpoints/

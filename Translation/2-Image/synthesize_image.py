@@ -56,6 +56,13 @@ _FONT_SIZE_STEP: int = 2   # decrement per iteration; smaller = finer but slower
 # Pixel margin sampled outside each text bbox to estimate the background colour.
 _BG_SAMPLE_MARGIN: int = 5
 
+# Canvas dimensions for synthesize_text_to_image (plain-background renders).
+_CANVAS_WIDTH: int = 800
+_CANVAS_PADDING: int = 20
+_CANVAS_MIN_HEIGHT: int = 80
+_CANVAS_BG_LIGHT: tuple[int, int, int] = (255, 255, 255)
+_CANVAS_BG_DARK: tuple[int, int, int] = (43, 43, 43)
+
 
 def _font_candidates(lang: str) -> list[str]:
     lang_fonts = _FONT_CANDIDATES_BY_LANG.get(lang.lower(), [])
@@ -217,6 +224,56 @@ def synthesize_image(
     # Fit and render the translated text.
     font, wrapped = _fit_text(draw, translated_text, box_w, box_h, lang=tgt_lang)
     draw.text((ux1, uy1), wrapped, fill=text_color, font=font)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.read()
+
+
+def synthesize_text_to_image(
+    text: str,
+    lang: str = "en",
+    dark: bool = False,
+) -> bytes:
+    """Render translated text on a plain background and return PNG bytes.
+
+    Used when there is no source image to modify (audio, video, inline text
+    inputs). The canvas width is fixed; height grows to fit the wrapped text.
+
+    Args:
+        text: The text to render.  Must be non-empty.
+        lang: Target language code (used to select a matching font).
+        dark: If True, use a dark background with light text.
+
+    Returns:
+        PNG image bytes.
+
+    Raises:
+        ValueError: If text is empty or whitespace-only.
+    """
+    if not text or not text.strip():
+        raise ValueError("Cannot synthesize image from empty text.")
+
+    bg = _CANVAS_BG_DARK if dark else _CANVAS_BG_LIGHT
+    text_color = _contrasting_color(bg)
+    box_w = _CANVAS_WIDTH - 2 * _CANVAS_PADDING
+
+    # Probe pass: find font size with unconstrained height, then measure.
+    probe = Image.new("RGB", (_CANVAS_WIDTH, _CANVAS_MIN_HEIGHT), bg)
+    probe_draw = ImageDraw.Draw(probe)
+    font, wrapped = _fit_text(probe_draw, text, box_w, 9999, lang=lang)
+    try:
+        tb = probe_draw.textbbox((_CANVAS_PADDING, _CANVAS_PADDING), wrapped, font=font)
+        text_h = tb[3] - tb[1]
+    except AttributeError:
+        _, text_h = probe_draw.textsize(wrapped, font=font)  # type: ignore[attr-defined]
+
+    height = max(_CANVAS_MIN_HEIGHT, text_h + 2 * _CANVAS_PADDING)
+
+    img = Image.new("RGB", (_CANVAS_WIDTH, height), bg)
+    draw = ImageDraw.Draw(img)
+    draw.text((_CANVAS_PADDING, _CANVAS_PADDING), wrapped, fill=text_color, font=font)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
