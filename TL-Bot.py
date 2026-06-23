@@ -870,6 +870,189 @@ async def _handle_text_inline(
         await status.edit(content="Translation failed. Please try again later.")
 
 
+# Per-language test scripts for /test <lang>.
+# Each entry: (input_text, to_lang) — to_lang is None to target English,
+# except "en" which targets Spanish so there is something to actually translate.
+_TEST_SCRIPTS: dict[str, tuple[str, str | None]] = {
+    "english": (
+        "Hello! I am TL-Bot, a translation assistant for Discord. "
+        "I can translate text, images, audio files, and videos from many languages. "
+        "For example, if you send me an image containing Chinese or Japanese text, "
+        "I will automatically read the text and translate it for you. "
+        "You can also send voice messages, which I will transcribe using Whisper and then translate. "
+        "If you would like the result as an audio file, a plain text file, or an image, "
+        "just add the --synthesize flag to your translate command. "
+        "Type /help for a full list of commands and options!",
+        "es",
+    ),
+    "chinese": (
+        "你好！我是TL-Bot，一个Discord翻译助手。"
+        "我可以翻译文字、图片、音频文件和视频中的内容。"
+        "例如，如果你发送一张包含中文或日文的图片，我会自动识别文字并将其翻译成英文。"
+        "你也可以发送语音消息，我会使用Whisper进行转录，然后进行翻译。"
+        "如果你希望以音频文件、纯文本文件或图片的形式接收翻译结果，"
+        "只需在翻译命令中添加 --synthesize 标志即可。"
+        "输入 /help 查看完整的命令和选项列表！",
+        None,
+    ),
+    "japanese": (
+        "こんにちは！私はDiscord用の翻訳アシスタント、TL-Botです。"
+        "テキスト、画像、音声ファイル、動画など、さまざまな形式のコンテンツを翻訳できます。"
+        "例えば、中国語や日本語のテキストが含まれた画像を送っていただければ、"
+        "自動的にテキストを認識して英語に翻訳します。"
+        "音声メッセージも受け付けており、Whisperで文字起こしをした後に翻訳します。"
+        "翻訳結果を音声ファイル、テキストファイル、または画像として受け取りたい場合は、"
+        "翻訳コマンドに --synthesize フラグを追加してください。"
+        "/help と入力すると、コマンドとオプションの一覧が表示されます！",
+        None,
+    ),
+    "korean": (
+        "안녕하세요! 저는 TL-Bot입니다. "
+        "저는 이미지, 텍스트, 오디오 파일을 번역할 수 있어요. "
+        "예를 들어, 한국어나 중국어로 된 이미지를 보내주시면 자동으로 텍스트를 인식하고 영어로 번역해드립니다. "
+        "또한 음성 메시지도 받아서 Whisper로 전사한 뒤 번역할 수 있습니다. "
+        "번역 결과는 텍스트, 오디오 파일(MP3), 또는 이미지 형태로 받아보실 수 있어요. "
+        "궁금한 점이 있으시면 /help 명령어를 사용해 주세요!",
+        None,
+    ),
+    "french": (
+        "Bonjour ! Je suis TL-Bot, un assistant de traduction pour Discord. "
+        "Je peux traduire du texte, des images, des fichiers audio et des vidéos depuis de nombreuses langues. "
+        "Par exemple, si vous m'envoyez une image contenant du texte en chinois ou en japonais, "
+        "je lirai automatiquement le texte et le traduirai pour vous. "
+        "Vous pouvez également envoyer des messages vocaux, que je transcrirai avec Whisper avant de les traduire. "
+        "Si vous souhaitez recevoir le résultat sous forme de fichier audio, de texte brut ou d'image, "
+        "ajoutez simplement le drapeau --synthesize à votre commande de traduction. "
+        "Tapez /help pour obtenir la liste complète des commandes et des options !",
+        None,
+    ),
+}
+
+_TEST_LANG_ALIASES: dict[str, str] = {
+    "en": "english", "zh": "chinese", "cn": "chinese", "ja": "japanese",
+    "jp": "japanese", "ko": "korean", "kr": "korean", "fr": "french",
+}
+
+
+async def _handle_test(channel: discord.abc.Messageable, author_name: str, lang_arg: str) -> None:
+    """Translate one of the built-in test scripts and return all three synthesis outputs.
+
+    lang_arg is the word after /test (e.g. "korean", "zh"). Defaults to "korean".
+    Video synthesis is omitted — it requires a video attachment as source.
+    """
+    key = _TEST_LANG_ALIASES.get(lang_arg, lang_arg) if lang_arg else "korean"
+    if key not in _TEST_SCRIPTS:
+        valid = ", ".join(f"`{k}`" for k in _TEST_SCRIPTS)
+        await channel.send(
+            f"Unknown test language `{lang_arg}`. Valid options: {valid}."
+        )
+        return
+
+    test_text, to_lang = _TEST_SCRIPTS[key]
+    tgt_label = get_language_name(to_lang) if to_lang else "English"
+
+    status = await channel.send(
+        f"**Running /test {key}**\nInput ({len(test_text)} chars):\n> {test_text}\n\n_Translating..._"
+    )
+    try:
+        result = await asyncio.to_thread(translate_text, test_text, None, to_lang)
+    except Exception as e:
+        logger.exception("Test translation failed: %s", e)
+        await status.edit(content="_Translation failed during /test._")
+        return
+
+    translated = result.get("translated_text", "")
+    src_name = get_language_name(result.get("source_language", ""))
+    conf = result.get("confidence")
+    conf_str = f" ({conf * 100:.0f}%)" if conf is not None else ""
+    synth_lang = to_lang or "en"
+
+    await status.edit(
+        content=(
+            f"**[/test {key}] Translation result [{src_name} → {tgt_label}]{conf_str}**\n"
+            f"> {test_text}\n"
+            f"{translated}\n\n"
+            "_Generating synthesized outputs..._"
+        )
+    )
+
+    if not translated:
+        await status.edit(content="_No translated text produced — synthesis skipped._")
+        return
+
+    # Generate all three outputs; collect whichever succeed.
+    synth_files: list[discord.File] = []
+    synth_errors: list[str] = []
+
+    # --- text file ---
+    try:
+        txt_bytes = translated.encode("utf-8")
+        synth_files.append(discord.File(io.BytesIO(txt_bytes), filename=f"test_{key}_translated.txt"))
+        try:
+            save_synthesis_output(
+                txt_bytes, "text",
+                translated_text=translated,
+                source_type="text",
+                target_language=synth_lang,
+                username=author_name,
+            )
+        except Exception:
+            logger.warning("Test: failed to save text synthesis output", exc_info=True)
+    except Exception as e:
+        logger.warning("Test text-file synthesis failed: %s", e)
+        synth_errors.append("text file")
+
+    # --- audio MP3 ---
+    try:
+        audio_bytes = await asyncio.to_thread(synthesize_speech, translated, synth_lang)
+        synth_files.append(discord.File(io.BytesIO(audio_bytes), filename=f"test_{key}_translated.mp3"))
+        try:
+            save_synthesis_output(
+                audio_bytes, "audio",
+                translated_text=translated,
+                source_type="text",
+                target_language=synth_lang,
+                username=author_name,
+            )
+        except Exception:
+            logger.warning("Test: failed to save audio synthesis output", exc_info=True)
+    except Exception as e:
+        logger.warning("Test audio synthesis failed: %s", e)
+        synth_errors.append("audio")
+
+    # --- image PNG ---
+    try:
+        synth_bytes = await asyncio.to_thread(synthesize_text_to_image, translated, synth_lang)
+        synth_files.append(discord.File(io.BytesIO(synth_bytes), filename=f"test_{key}_translated.png"))
+        try:
+            save_synthesis_output(
+                synth_bytes, "image",
+                translated_text=translated,
+                source_type="text",
+                target_language=synth_lang,
+                username=author_name,
+            )
+        except Exception:
+            logger.warning("Test: failed to save image synthesis output", exc_info=True)
+    except Exception as e:
+        logger.warning("Test image synthesis failed: %s", e)
+        synth_errors.append("image")
+
+    error_note = f"\n_Failed: {', '.join(synth_errors)}_" if synth_errors else ""
+    await status.edit(
+        content=(
+            f"**[/test {key}] Translation result [{src_name} → {tgt_label}]{conf_str}**\n"
+            f"> {test_text}\n"
+            f"{translated}{error_note}"
+        )
+    )
+    if synth_files:
+        await channel.send(
+            f"**[/test {key}] Synthesized outputs (.txt · .mp3 · .png)**",
+            files=synth_files,
+        )
+
+
 # Bot events
 @client.event
 async def on_ready():
@@ -907,7 +1090,9 @@ async def on_message(message):
             "      audio  → MP3 speech file (all input types)\n"
             "      text   → plain .txt file (all input types)\n"
             "      image  → translated PNG (image: text replaced in-place; other inputs: text on plain background)\n"
-            "      video  → MKV with original video and synthesized translated audio (video input only)"
+            "      video  → MKV with original video and synthesized translated audio (video input only)\n"
+            "/test <language> — Run a self-test with a built-in sample text and return all synthesis outputs\n"
+            "      Supported: english, chinese, japanese, korean, french"
         )
         return
 
@@ -931,6 +1116,11 @@ async def on_message(message):
                     await message.channel.send(f"Unsupported file type: {attachment.url}.")
         else:
             await _handle_text_inline(text_input, from_lang, to_lang, analyze, synthesize, message.channel, message.author.name)
+        return
+
+    if msg.startswith("/test"):
+        lang_arg = msg[len("/test"):].strip().lower()
+        await _handle_test(message.channel, message.author.name, lang_arg)
         return
 
     await message.channel.send("Translate function not yet implemented, please stay tuned!")

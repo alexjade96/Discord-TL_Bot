@@ -27,14 +27,19 @@ else:
     from utils         import get_device, load_checkpoint, save_checkpoint, set_seed
 
 
-_HERE = Path(__file__).parent
-_DEFAULT_DATASET = str(_HERE.parent.parent / 'Datasets' / 'char-dataset')
-_DEFAULT_CKPTS   = str(_HERE.parent / 'checkpoints')
+_HERE        = Path(__file__).parent
+_DATASET_ROOT = _HERE.parent.parent / 'Datasets' / 'char-dataset'
+_DEFAULT_CKPTS = str(_HERE.parent / 'checkpoints')
+
+_SCRIPT_NAMES = ('latin', 'kana', 'hangul', 'cjk')
 
 
 def parse_args():
     p = argparse.ArgumentParser(description='Character OCR Classifier Training')
-    p.add_argument('--dataset-dir',      default=_DEFAULT_DATASET)
+    p.add_argument('--scripts', nargs='+', default=['latin'],
+                   choices=[*_SCRIPT_NAMES, 'all'],
+                   help='Script subdirs to include. "all" expands to latin kana hangul cjk '
+                        '(default: latin)')
     p.add_argument('--checkpoint-dir',   default=_DEFAULT_CKPTS)
     p.add_argument('--backbone',         default='dinov2_vits14',
                    choices=['dinov2_vits14', 'dinov2_vitb14', 'convnext_tiny'],
@@ -49,10 +54,17 @@ def parse_args():
                    help='Head LR; backbone uses lr * 0.1 in phase 2')
     p.add_argument('--augment',          default='heavy',
                    choices=['none', 'light', 'heavy'])
+    p.add_argument('--grid-mode',        default='single',
+                   choices=['single', 'rotated', 'all'],
+                   help='single=TileGrid3x3 only | rotated=+full-grid rotation | '
+                        'all=random choice among all 6 variants per sample')
     p.add_argument('--mixup-alpha',      type=float, default=0.4,
                    help='MixUp alpha (Beta distribution param). 0 = disabled')
     p.add_argument('--clip-grad',        type=float, default=1.0,
                    help='Max gradient norm for clipping. 0 = disabled')
+    p.add_argument('--max-per-class',   type=int,   default=0,
+                   help='Cap each class at N images before splitting (0 = no cap). '
+                        'Use for fast smoke tests, e.g. --max-per-class 20.')
     p.add_argument('--no-weighted-sampler', action='store_true',
                    help='Disable class-balanced WeightedRandomSampler (use shuffle instead)')
     p.add_argument('--seed',             type=int,   default=42)
@@ -68,16 +80,35 @@ def main():
     device = get_device()
     print(f'[train] Device: {device}')
 
-    ckpt_dir = Path(args.checkpoint_dir)
+    scripts = _SCRIPT_NAMES if 'all' in args.scripts else args.scripts
+
+    # Auto-scope checkpoint dir: single script → checkpoints/<script>/
+    default_ckpts = Path(_DEFAULT_CKPTS)
+    if args.checkpoint_dir == _DEFAULT_CKPTS and len(scripts) == 1:
+        ckpt_dir = default_ckpts / scripts[0]
+    else:
+        ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+    dataset_dirs = [str(_DATASET_ROOT / s) for s in scripts]
+    print(f'[train] Scripts: {", ".join(scripts)}')
+
+    # Write config so compare.py knows which backbone to load for this script set
+    import json as _json
+    _json.dump(
+        {'backbone': args.backbone, 'scripts': list(scripts), 'epochs': args.epochs},
+        open(ckpt_dir / 'config.json', 'w'), indent=2,
+    )
+
     train_loader, val_loader, test_loader, class_names = get_dataloaders(
-        dataset_dir=args.dataset_dir,
+        dataset_dirs=dataset_dirs,
         batch_size=args.batch_size,
         augment=args.augment,
+        grid_mode=args.grid_mode,
         num_workers=args.num_workers,
         seed=args.seed,
         weighted_sampler=not args.no_weighted_sampler,
+        max_per_class=args.max_per_class,
     )
     json.dump(class_names, open(ckpt_dir / 'class_names.json', 'w'), indent=2)
 

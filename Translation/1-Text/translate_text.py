@@ -16,6 +16,7 @@ Environment:
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from huggingface_hub import InferenceClient
@@ -153,6 +154,47 @@ def _translate_from_english(
     return result.translation_text
 
 
+# Sentence-boundary patterns: split *after* each terminator so punctuation
+# stays attached to the sentence it ends (not the next one).
+_SENT_CJK    = re.compile(r'(?<=[。？！…])')           # Chinese / Japanese
+_SENT_LATIN  = re.compile(r'(?<=[.?!…])(?=[ \t])')    # Latin-script languages
+_SENT_KOREAN = re.compile(                             # Korean: both terminator sets
+    r'(?<=[。？！…\n])|(?<=[.?!])(?=[ \t])'
+)
+
+
+def _split_sentences(text: str, lang_code: str) -> list[str]:
+    """Split text on script-appropriate sentence terminators.
+
+    Returns a list of non-empty stripped chunks. Falls back to a single-element
+    list containing the full text when no terminators are found.
+    """
+    base = lang_code.split("-")[0]
+    if base in ("zh", "ja"):
+        raw = _SENT_CJK.split(text)
+    elif base == "ko":
+        raw = _SENT_KOREAN.split(text)
+    else:
+        raw = _SENT_LATIN.split(text)
+    chunks = [c.strip() for c in raw if c.strip()]
+    return chunks or [text]
+
+
+def _translate_chunked(text: str, lang_code: str, translate_fn) -> str:
+    """Translate text sentence-by-sentence and rejoin.
+
+    Splits on script-appropriate terminators, calls translate_fn on each chunk,
+    then rejoins: empty string for CJK (no inter-sentence space), single space
+    for all Latin-script languages.
+    """
+    chunks = _split_sentences(text, lang_code)
+    if len(chunks) <= 1:
+        return translate_fn(text)
+    base = lang_code.split("-")[0]
+    glue = "" if base in ("zh", "ja") else " "
+    return glue.join(translate_fn(c) for c in chunks)
+
+
 def _translate_via_segments(
     segs: list[dict],
     client: InferenceClient,
@@ -184,7 +226,11 @@ def _translate_via_segments(
         if effective_lang == "en":
             parts.append(seg["text"])
         else:
-            parts.append(_translate_to_english(seg["text"], client, src_lang=effective_lang))
+            _el = effective_lang  # avoid late-binding closure capture
+            parts.append(_translate_chunked(
+                seg["text"], _el,
+                lambda t, lang=_el: _translate_to_english(t, client, src_lang=lang),
+            ))
             if not found_foreign:
                 dominant_lang = seg["lang_code"]
                 found_foreign = True
@@ -248,7 +294,10 @@ def translate_text(
 
     # English source -> non-English target: single hop, no segmentation needed
     if source_is_english and not target_is_english:
-        translated = _translate_from_english(text, tgt_lang, client)
+        translated = _translate_chunked(
+            text, "en",
+            lambda t: _translate_from_english(t, tgt_lang, client),
+        )
         return {"translated_text": translated, "source_language": "en", "confidence": confidence, "method": "opus-mt"}
 
     # Mixed or pure foreign text: segment once, translate non-English spans in place
@@ -261,13 +310,19 @@ def translate_text(
         method = "opus-mt-segmented" if english_segs else "opus-mt"
     else:
         # segment_text sees all English but detection disagrees (short/ambiguous text)
-        translated = _translate_to_english(text, client, src_lang=src_lang)
+        translated = _translate_chunked(
+            text, detected,
+            lambda t: _translate_to_english(t, client, src_lang=src_lang),
+        )
         dominant_lang = detected
         method = "opus-mt"
 
     # Chain to non-English target if requested
     if not target_is_english:
-        translated = _translate_from_english(translated, tgt_lang, client)
+        translated = _translate_chunked(
+            translated, "en",
+            lambda t: _translate_from_english(t, tgt_lang, client),
+        )
 
     return {"translated_text": translated, "source_language": dominant_lang, "confidence": confidence, "method": method}
 

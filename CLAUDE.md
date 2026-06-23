@@ -379,6 +379,121 @@ Exploratory work; production pipelines are in the `.py` modules above:
 
 `Typography/Typography_Model.ipynb` — PyTorch font classification model.
 
+### Models (`Models/`)
+
+Research and training infrastructure for OCR and font classification. Separate from the production `Translation/` pipeline — nothing here is imported by `TL-Bot.py`.
+
+```
+Models/
+  Datasets/
+    char-dataset/
+      latin/    ← 62 classes, 77,799 images
+      kana/     ← 169 viable / 172 total classes, 2,036 images
+      hangul/   ← 500 classes, 6,000 images
+      cjk/      ← 1,312 viable / 3,000 total classes, 10,506 images
+    render_chars.py   ← generates char-dataset (run from Models/Datasets/)
+  OCR/
+    ocr_pipeline.py   ← CRAFT detection + script-routed recognition (public API)
+    compare.py        ← std OCR vs char_classifier comparison harness
+    detection/
+      craft_detector.py
+    char_classifier/
+      segment.py      ← column-projection character segmenter
+      data.py         ← dataset builder (multi-dir, max_per_class cap)
+      train.py        ← training CLI (auto-scopes checkpoints per script)
+      engine.py       ← train_loop, mixup, gradient clipping
+      model_builder.py← DINOv2/ConvNeXt classifiers
+      model_utils.py  ← unfreeze_backbone, print_param_summary
+      predict.py      ← single-image inference CLI
+      stats.py        ← plot_curves, print_report
+      utils.py        ← get_device, save/load checkpoint, set_seed
+    checkpoints/
+      <script>/best.pt         ← per-script model (latin/, kana/, hangul/, cjk/)
+      <script>/class_names.json
+      <script>/config.json     ← backbone name + script list written at train start
+  Typography/
+    font_classifier/            ← font style classifier package (mirrors char_classifier structure)
+    get_fonts.py
+```
+
+#### char-dataset notes
+
+- CJK: only 1,312 of 3,000 classes have ≥ 5 images; the rest are skipped by `build_dataset`. Most CJK classes have 3–4 images because many Windows fonts lack full Joyo coverage. Viable CJK classes contribute ~7,354 training samples.
+- Kana: 3 of 172 classes empty (U+3094/3095/3096 are obsolete kana not in Windows fonts).
+- Latin: 77,799 images across 62 classes — by far the largest script; dominates full-dataset training time.
+
+#### OCR pipeline (`ocr_pipeline.py`)
+
+Script-routed recognition. Import from `Models/OCR/`:
+
+```python
+from ocr_pipeline import recognize, recognize_crop, recognize_char
+results = recognize('screenshot.png')   # list[RegionResult]
+```
+
+Routing logic per CRAFT-detected region:
+1. Run **manga-ocr** on the crop
+2. Normalize fullwidth Latin (U+FF01–U+FF5E → ASCII); if Latin fraction > 0.6 → **EasyOCR English**
+3. If Hangul present in output → **EasyOCR Korean**
+4. Otherwise accept manga-ocr (CJK / Kana)
+
+Known v1 limitation: Korean crops are silently mapped to Japanese by manga-ocr (it's trained on manga). Post-hoc Hangul check doesn't catch this. Fix requires a trained script pre-classifier.
+
+CLI: `python -m ocr_pipeline --image screenshot.png [--show-boxes] [--save-crops]`
+
+#### char_classifier
+
+Per-script flat multiclass classifiers (one model per script). DINOv2 ViT-S backbone (default) or ConvNeXt-Tiny. Two-phase training: frozen head warm-up → backbone fine-tune with differential LR.
+
+`train.py` auto-scopes checkpoint dir when a single script is selected:
+- `--scripts latin` → `checkpoints/latin/`
+- `--scripts all` → `checkpoints/` (legacy flat layout)
+
+Writes `config.json` at training start so `compare.py` can reload the correct backbone.
+
+```powershell
+# From Models/OCR/
+# Per-script training (GPU recommended for full dataset)
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin --backbone convnext_tiny --epochs 30
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts kana   --backbone dinov2_vits14 --epochs 30
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts hangul --backbone dinov2_vits14 --epochs 30
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts cjk    --backbone dinov2_vits14 --epochs 30
+
+# Smoke test (fast, CPU-feasible)
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts all --max-per-class 20 --backbone convnext_tiny --epochs 3 --no-tensorboard
+```
+
+#### `segment.py` — column-projection character segmenter
+
+`split_into_chars(crop) → list[Image]`: finds inter-character ink-gap columns in a word/line crop and returns individual char crops. Default sigma=0.0 (no Gaussian smoothing) — smoothing fills typeset inter-character gaps and must not be used for clean text. Only pass `sigma=0.5` for heavily degraded or handwritten input.
+
+#### `compare.py` — OCR comparison harness
+
+Runs both standard OCR and per-script char_classifier on every CRAFT-detected region, then outputs a console table and a saved PNG grid (each char crop with std OCR prediction vs classifier prediction, colour-coded by agreement).
+
+```powershell
+# From Models/OCR/
+.\..\..\.venv\Scripts\python.exe -m compare --image screenshot.png
+.\..\..\.venv\Scripts\python.exe -m compare --image screenshot.png --save-grid out.png --top-k 3
+.\..\..\.venv\Scripts\python.exe -m compare --image screenshot.png --no-grid
+```
+
+Classifier loading: looks for `checkpoints/<script>/best.pt` first, falls back to `checkpoints/best.pt` (legacy). Reads `config.json` for backbone name; defaults to `dinov2_vits14` if absent.
+
+#### Training benchmarks (measured, CPU, ConvNeXt-Tiny, augment=light)
+
+Sample run (all scripts, max-per-class=20): **1.32 s/iter train, 1.11 s/iter val**
+
+| Scope | Batches/epoch | Train/epoch | Val/epoch | 30-epoch total (CPU) |
+|---|---|---|---|---|
+| All scripts, sample (max-per-class=20) | 433 | 9.5 min | 1.75 min | ~3.7 hrs |
+| Latin only, full | 1,702 | 37 min | 6.8 min | ~22 hrs |
+| All scripts, full | 2,109 | 46 min | 8.4 min | ~27 hrs |
+
+GPU estimates for full all-scripts run: RTX 3080 ≈ 75 min, RTX 4090 ≈ 40 min, A100 ≈ 25 min.
+
+Per-character inference via compare.py: ~35 ms/crop on CPU (1.11 s/iter ÷ 32 batch).
+
 ## Dependencies
 
 Install from `requirements.txt`:
@@ -398,7 +513,7 @@ Always run scripts with `.venv\Scripts\python.exe` — the system Python lacks `
 - **Intents**: `message_content` intent is enabled — must also be enabled in the Discord Developer Portal.
 - **Secrets**: `DISCORD_BOT_TOKEN` and `HF_TOKEN` must never be hardcoded; load from `.env` (gitignored).
 - **No git co-author tags**: Do not add `Co-Authored-By: Claude` lines to commits in this repo.
-- **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Image/training/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, or model checkpoints.
+- **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Image/training/checkpoints/`, `Models/Datasets/char-dataset/`, `Models/Datasets/font-dataset/`, `Models/Datasets/windows-fonts/`, `Models/OCR/checkpoints/`, `Models/Typography/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, model checkpoints, or generated datasets.
 - **Test suite**: `pytest` tests exist under `Translation/1-Text/tests/`, `Translation/2-Image/tests/`, `Translation/3-Audio/tests/`, and `Translation/4-Video/tests/`. Run with `pytest` from the repo root. All four suites use mocks — no network calls required. (84 tests pass, 1 skips if `test_image.png` is absent.)
 - **Preprocessing variants**: All six variants are available in `ocr.py`; `preprocess()` (baseline) is the production default. Use `compare_preprocess.py` to evaluate before switching. `light_denoise` is the most consistent alternative.
 - **Public API surface**: `translate_text()` in `translate_text.py` is the public entry point; `_translate_to_english()` and `_translate_from_english()` are private implementation details.
