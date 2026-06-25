@@ -148,6 +148,7 @@ def build_dataset(
     test_split:    float = 0.15,
     seed:          int   = 42,
     max_per_class: int   = 0,    # 0 = no cap; >0 = cap each class at N images
+    min_per_class: int   = 5,    # skip classes with fewer images than this
 ):
     """
     Build train/val/test splits from one or more class-directory trees.
@@ -172,7 +173,7 @@ def build_dataset(
             if not d.is_dir():
                 continue
             imgs = sorted(d.glob('*.png'))
-            if len(imgs) >= 5:
+            if len(imgs) >= min_per_class:
                 if d.name in per_class:
                     print(f'[data] WARNING: duplicate class name {d.name!r} from {root} — skipping')
                 else:
@@ -180,7 +181,8 @@ def build_dataset(
                         imgs = rng.sample(imgs, max_per_class)
                     per_class[d.name] = imgs
             else:
-                print(f'[data] skipping {d.name!r}: only {len(imgs)} image(s)')
+                if len(imgs) > 0:
+                    print(f'[data] skipping {d.name!r}: only {len(imgs)} image(s) (need {min_per_class})')
 
     class_names  = sorted(per_class.keys())
     class_to_idx = {c: i for i, c in enumerate(class_names)}
@@ -222,6 +224,7 @@ def get_dataloaders(
     num_workers:      int   = 0,
     weighted_sampler: bool  = True,
     max_per_class:    int   = 0,
+    min_per_class:    int   = 5,
 ):
     """
     dataset_dirs : str | Path | list[str | Path]
@@ -229,9 +232,13 @@ def get_dataloaders(
     max_per_class : int
         Cap each class at N images before splitting (0 = no cap).
         Useful for fast smoke tests without changing dataset structure.
+    min_per_class : int
+        Minimum images required to include a class (default 5).
+        Lower to 1 if you want to include classes rendered by only one font.
     """
     train_s, val_s, test_s, class_names, _ = build_dataset(
-        dataset_dirs, val_split, test_split, seed, max_per_class=max_per_class
+        dataset_dirs, val_split, test_split, seed,
+        max_per_class=max_per_class, min_per_class=min_per_class,
     )
     train_tf, eval_tf = get_transforms(augment, grid_mode=grid_mode)
     train_ds = CharDataset(train_s, transform=train_tf)

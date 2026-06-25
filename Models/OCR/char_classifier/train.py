@@ -65,6 +65,9 @@ def parse_args():
     p.add_argument('--max-per-class',   type=int,   default=0,
                    help='Cap each class at N images before splitting (0 = no cap). '
                         'Use for fast smoke tests, e.g. --max-per-class 20.')
+    p.add_argument('--min-per-class',   type=int,   default=5,
+                   help='Minimum images to include a class (default 5). '
+                        'Lower to 1 after re-rendering CJK with more sizes.')
     p.add_argument('--no-weighted-sampler', action='store_true',
                    help='Disable class-balanced WeightedRandomSampler (use shuffle instead)')
     p.add_argument('--seed',             type=int,   default=42)
@@ -109,6 +112,7 @@ def main():
         seed=args.seed,
         weighted_sampler=not args.no_weighted_sampler,
         max_per_class=args.max_per_class,
+        min_per_class=args.min_per_class,
     )
     json.dump(class_names, open(ckpt_dir / 'class_names.json', 'w'), indent=2)
 
