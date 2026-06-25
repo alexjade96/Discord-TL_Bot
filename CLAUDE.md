@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Discord bot (`TL-Bot.py`) that translates text and images for users. The bot is triggered by @mention and routes `/translate` commands based on attachment type (image, audio, text) or inline text. Image, text file, and audio translation pipelines are fully wired into the bot; video remains a stub.
+Discord bot (`TL-Bot.py`) that translates text and images for users. The bot is triggered by @mention and routes `/translate` commands based on attachment type (image, audio, text, video) or inline text. All four translation pipelines are fully wired into the bot. Translated output can optionally be re-synthesized as an audio file, a rendered image, a plain text file, or a video via `--synthesize`.
 
 ## Running the Bot
 
@@ -29,40 +29,47 @@ The bot token **must not be hardcoded** in `TL-Bot.py`. It is loaded via `python
 The bot only responds when `@TL-Bot` is the first token. Command routing:
 
 - No args → greeting
-- `/help` → command list (shows `--from`, `--to`, `--analyze` flags)
+- `/help` → command list (shows `--from`, `--to`, `--analyze`, `--synthesize` flags)
 - `/translate [flags] <text>` → translate inline text
 - `/translate [flags]` + image attachment → OCR then translate
 - `/translate [flags]` + audio attachment → transcribe (Whisper) then translate
 - `/translate [flags]` + text file attachment → read, decode, then translate
-- `/translate` + video attachment → stub (not yet implemented)
+- `/translate [flags]` + video attachment → extract audio, transcribe (Whisper), then translate
+- `/test [language]` → translate a built-in sample script and return all three synthesis outputs (`.txt`, `.mp3`, `.png`)
 - Unrecognized command → fallback message
 
 Flags parsed by `_parse_translate_flags()` in `TL-Bot.py` (called once per `/translate` command, shared by attachment and inline paths):
 - `--from <language>` — hint the source language; triggers a dual-pass comparison for images and text files
 - `--to <language>` — set output language (default: English)
 - `--analyze` — show segment analysis alongside the translation
+- `--synthesize <type>` — re-synthesize the translated text as `audio` (MP3 via gTTS), `image` (PNG canvas render), `text` (UTF-8 `.txt`), or `video` (MKV with TTS audio track)
 
 Language names/codes are resolved via `parse_language_hint()` in `Translation/1-Text/utils.py` (supports common names, aliases, ISO 639-1 codes).
 
 `_same_lang_msg(from_lang, extra="")` — shared helper in `TL-Bot.py` that formats the "nothing to translate" Discord message when source and target resolve to the same language.
 
+`_TEST_SCRIPTS` — dict of `key → (input_text, to_lang)` for the five `/test` languages. `_TEST_LANG_ALIASES` maps ISO codes and alternate spellings to those keys. English targets Spanish (so translation actually runs); all others target English. Specifiable as `/test english`, `/test zh`, `/test ko`, etc.; defaults to `korean`.
+
 ### Bot Handler Structure
 
-`on_message` is a flat router that parses flags once and dispatches to one of four self-contained async handlers — each structured as verify → perform → respond:
+`on_message` is a flat router that parses flags once and dispatches to one of five self-contained async handlers — each structured as verify → perform → respond:
 
-- `_handle_image(attachment, ...)` — size gate + magic byte check + OCR/translate + collect
-- `_handle_audio(attachment, ...)` — size gate + magic byte check + Whisper transcribe + translate + collect
-- `_handle_text_file(attachment, ...)` — size gate + safety check + decode + truncate + translate + collect
+- `_handle_image(attachment, ...)` — size gate + magic byte check + OCR/translate + collect + optional synthesis
+- `_handle_audio(attachment, ...)` — size gate + magic byte check + Whisper transcribe + translate + collect + optional synthesis
+- `_handle_text_file(attachment, ...)` — size gate + safety check + decode + truncate + translate + collect + optional synthesis
 - `_handle_text_inline(text, ...)` — same-lang check + `_run_text_translate`
+- `_handle_video(attachment, ...)` — size gate + magic byte check + extract audio (PyAV) + Whisper transcribe + translate + collect + optional synthesis
+- `_handle_test(channel, author_name, lang_arg)` — resolves language key, translates built-in script, sends `.txt`/`.mp3`/`.png` in one message
 
 Shared helpers:
 
 - `_run_text_translate(text, ...)` — auto pass + optional hint pass + optional analyze + send + collect; used by both inline and file text handlers
+- `_send_synthesized(translated_text, to_lang, synthesize_type, channel)` — generates and sends a single synthesized output file; called from each handler for `audio` and `text` types; image and video synthesis are inlined per handler
 - `_collect_text(result, ...)` — non-fatal `save_text_submission` + logging; called from `_run_text_translate`
-- `_check_content_safety(raw, content_type, filename)` — returns error string or None; null-byte check for `text/*`, magic-byte check for `image/*` and `audio/*`
-- `_fetch_header(url, n=16)` — lightweight aiohttp range request to get the first 16 bytes of an image or audio URL for magic-byte validation without a full download
-- `_MAGIC_BYTES` — dict mapping MIME type → list of valid leading byte sequences; covers PNG, JPEG, GIF, WebP, BMP, OGG, MP3, WAV, WebM
-- Size limits: `_MAX_IMAGE_BYTES = 8 MB`, `_MAX_AUDIO_BYTES = 8 MB`, `_MAX_TEXT_BYTES = 50 KB`, `_MAX_TRANSLATE_CHARS = 3000` (text content cap before translation)
+- `_check_content_safety(raw, content_type, filename)` — returns error string or None; null-byte check for `text/*`, magic-byte check for `image/*`, `audio/*`, `video/*`
+- `_fetch_header(url, n=16)` — lightweight aiohttp range request to get the first 16 bytes for magic-byte validation without a full download
+- `_MAGIC_BYTES` — dict mapping MIME type → list of valid leading byte sequences; covers PNG, JPEG, GIF, WebP, BMP, OGG, MP3, WAV, WebM, MKV/WebM video
+- Size limits: `_MAX_IMAGE_BYTES = 8 MB`, `_MAX_AUDIO_BYTES = 8 MB`, `_MAX_TEXT_BYTES = 50 KB`, `_MAX_VIDEO_BYTES = 50 MB`, `_MAX_TRANSLATE_CHARS = 3000` (text content cap before translation)
 
 ## Architecture
 
@@ -80,6 +87,7 @@ Shared helpers:
   - Model resolution order (both directions): local fine-tuned model → override HF model → default pattern model.
   - `_translate_to_english(text, client)` and `_translate_from_english(text, tgt_lang, client)` are private; `translate_text()` is the public API.
   - `_translate_via_segments(segs, client, src_lang)` — translates each non-English segment in place, leaving English spans unchanged. Single code path for all mixed-script cases.
+  - Sentence-level chunking: `_split_sentences(text, lang_code)` splits on script-appropriate terminators (CJK: `。？！…`; Latin: `.?!…` + whitespace; Korean: both sets). `_translate_chunked(text, lang_code, translate_fn)` wraps any translate call with this splitting and rejoins with `""` (CJK/Japanese) or `" "` (Latin/Korean). All four translation call sites use `_translate_chunked` to avoid MarianMT's 512-token truncation on long inputs. `_MAX_TOKEN_LENGTH = 512`.
   - Same-language passthrough: when auto-detected source base code matches the requested non-English target, returns `method="passthrough"` with original text unchanged — prevents the two-hop zh→en→zh mangling bug.
   - Local model loading: `_load_local_model(direction)` checks `~/.tl-bot/models/<direction>/` for a fine-tuned MarianMT model (installed by `deploy.py`). Cached at module level. Falls back to HF Inference API if not present.
   - Returns dict: `{translated_text, source_language, confidence, method}`. Method values: `none` | `passthrough` | `opus-mt` | `opus-mt-segmented`.
@@ -102,6 +110,9 @@ Shared helpers:
   - Returns `{original_text, translated_text, source_language, confidence, method, collected}`.
   - Collection is non-fatal (bare `except Exception: pass`).
 
+- **`synthesize_audio.py`** — TTS synthesis via gTTS:
+  - `synthesize(text, lang)` — public API; maps langdetect codes to BCP-47 via `_to_gtts_lang()`, returns MP3 bytes.
+
 - **`WHISPER_LOCAL.md`** — Step-by-step guide for migrating to a locally fine-tuned Whisper model: when to switch, dependencies, local-first inference pattern (matching `translate_text.py`), fine-tuning with `Seq2SeqTrainer`, deploy to `~/.tl-bot/whisper/`, corrections schema.
 
 ### Video Translation & Audio Extraction (`Translation/4-Video/`)
@@ -119,6 +130,10 @@ Shared helpers:
   - Result dict uses `original_text` (the transcript) keyed to match `_fmt_result(ocr=True)`.
   - Returns `{original_text, translated_text, source_language, confidence, method, collected}`.
   - Collection via `collect_video.save_submission()` is non-fatal.
+
+- **`synthesize_video.py`** — Video synthesis from existing source + new TTS audio:
+  - `synthesize_video(source, text, lang)` — public API; accepts bytes, file path, or URL. Synthesizes speech from `text` via gTTS, replaces the audio track with the TTS audio using PyAV, returns MKV bytes.
+  - Preserves original video stream; only replaces audio.
 
 ### Image Translation (`Translation/2-Image/`)
 
@@ -141,6 +156,11 @@ Shared helpers:
   - Score = `ocr_confidence × lang_confidence` for comparison.
   - After each auto pass, calls `collect_image.save_submission()` (imported from `0-Data/Image/training/`) to store the image + labels for training (non-fatal if it fails).
   - Production default uses `preprocess()` (baseline).
+
+- **`synthesize_image.py`** — Image synthesis (two modes):
+  - `synthesize_image(source, text, lang)` — overlays translated text onto the original source image; picks a contrasting color against the sampled background.
+  - `synthesize_text_to_image(text, lang)` — renders translated text onto a plain canvas (used when there is no source image, e.g. from text or audio input). Selects a script-appropriate font and fits text to the canvas.
+  - Both return PNG bytes.
 
 ### Data Collection & Training (`Translation/0-Data/`)
 
@@ -365,6 +385,36 @@ cd Translation/0-Data/Video/testing/
 
 Requires internet access (gTTS for speech synthesis + HF Whisper API for transcription). `wrap_audio_in_mkv()` uses PyAV to encode gTTS MP3 into a Matroska container using the libopus codec at 48 kHz — no system ffmpeg needed.
 
+#### Synthesized output collection (`Translation/0-Data/Synthesized/`)
+
+Synthesis outputs generated by `--synthesize` (and `/test`) are collected here, separate from translation submissions.
+
+```
+Translation/0-Data/Synthesized/
+  collect_synthesized.py   ← save_synthesis(), load_submissions(), dataset_stats()
+  Audio/data/              ← MP3 TTS outputs  + synth_audio.jsonl
+  Image/data/              ← PNG image outputs + synth_image.jsonl
+  Text/data/               ← TXT file outputs  + synth_text.jsonl
+  Video/data/              ← MKV video outputs + synth_video.jsonl
+```
+
+`save_synthesis(output_bytes, synth_type, *, translated_text, source_type, target_language, username)` — deduplicates by SHA-1 of output bytes, saves file, appends JSONL entry. Called in TL-Bot.py as `save_synthesis_output` (aliased on import). Non-fatal.
+
+Schema (all four types share the same fields):
+
+```jsonc
+{
+  "content_hash":   "<sha1[:16] of output bytes>",  // deduplication key
+  "filename":       "<date>_<user>_<hash>.<ext>",
+  "synth_type":     "audio",   // 'audio' | 'image' | 'text' | 'video'
+  "source_type":    "image",   // input type that triggered synthesis
+  "translated_text": "<text that was synthesized>",
+  "target_language": "ko",
+  "username":       "discorduser",
+  "timestamp":      "2026-..."
+}
+```
+
 ### Research Notebooks
 
 Exploratory work; production pipelines are in the `.py` modules above:
@@ -386,17 +436,22 @@ Research and training infrastructure for OCR and font classification. Separate f
 ```
 Models/
   Datasets/
+    render_chars.py        ← generates char-dataset (run from Models/Datasets/)
+    get_fonts.py           ← scans Windows fonts → font-dataset/ (font classifier)
+    sample_tilegrid*.py    ← visual sanity checks for grid augments
     char-dataset/
       latin/    ← 62 classes, 77,799 images
       kana/     ← 169 viable / 172 total classes, 2,036 images
       hangul/   ← 500 classes, 6,000 images
       cjk/      ← 1,312 viable / 3,000 total classes, 10,506 images
-    render_chars.py   ← generates char-dataset (run from Models/Datasets/)
+    font-dataset/          ← 21,676 images (get_fonts.py output)
   OCR/
-    ocr_pipeline.py   ← CRAFT detection + script-routed recognition (public API)
-    compare.py        ← std OCR vs char_classifier comparison harness
+    grid_augments.py       ← 6 TileGrid3x3 transforms + RandomGridAugment
+    ocr_pipeline.py        ← CRAFT detection + script-routed recognition (public API)
+    compare.py             ← std OCR vs char_classifier comparison harness
     detection/
-      craft_detector.py
+      craft_detector.py    ← detect() / detect_and_crop() — fully implemented & tested
+      sample_craft.py      ← end-to-end test harness; generates synthetic Discord image
     char_classifier/
       segment.py      ← column-projection character segmenter
       data.py         ← dataset builder (multi-dir, max_per_class cap)
@@ -413,7 +468,8 @@ Models/
       <script>/config.json     ← backbone name + script list written at train start
   Typography/
     font_classifier/            ← font style classifier package (mirrors char_classifier structure)
-    get_fonts.py
+    Font_Classifier.ipynb
+    train_2epoch.log            ← baseline CPU run result (2 epochs, head warm-up only)
 ```
 
 #### char-dataset notes
@@ -421,6 +477,12 @@ Models/
 - CJK: only 1,312 of 3,000 classes have ≥ 5 images; the rest are skipped by `build_dataset`. Most CJK classes have 3–4 images because many Windows fonts lack full Joyo coverage. Viable CJK classes contribute ~7,354 training samples.
 - Kana: 3 of 172 classes empty (U+3094/3095/3096 are obsolete kana not in Windows fonts).
 - Latin: 77,799 images across 62 classes — by far the largest script; dominates full-dataset training time.
+
+#### CRAFT detection (`detection/craft_detector.py`) — complete
+
+`detect(source)` → `[(x1,y1,x2,y2), ...]`; `detect_and_crop(source, pad=4)` → `[PIL.Image, ...]`. Tested end-to-end on a synthetic 640×320 Discord dark-mode image — 8/8 regions detected correctly (English, Korean, Japanese, Chinese, usernames). Weights cached at `~/.craft_text_detector/weights/`. Pass `poly=False` (NumPy ≥1.24 breaks polygon mode). `sample_craft.py` is the test harness.
+
+Known compatibility patches (applied once to `.venv`): replace `model_urls` in `craft_text_detector/models/basenet/vgg16_bn.py` with `VGG16_BN_Weights.DEFAULT`; install with `--no-deps` + `pip install gdown` separately.
 
 #### OCR pipeline (`ocr_pipeline.py`)
 
@@ -453,15 +515,22 @@ Writes `config.json` at training start so `compare.py` can reload the correct ba
 
 ```powershell
 # From Models/OCR/
-# Per-script training (GPU recommended for full dataset)
-.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin --backbone convnext_tiny --epochs 30
-.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts kana   --backbone dinov2_vits14 --epochs 30
-.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts hangul --backbone dinov2_vits14 --epochs 30
-.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts cjk    --backbone dinov2_vits14 --epochs 30
+# Quick smoke test (CPU-feasible)
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin --epochs 5 --freeze-epochs 5 --max-per-class 20
 
-# Smoke test (fast, CPU-feasible)
-.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts all --max-per-class 20 --backbone convnext_tiny --epochs 3 --no-tensorboard
+# Per-script full runs (GPU recommended)
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin  --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts kana   --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts hangul --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts cjk    --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+
+# Resume from checkpoint
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin --resume checkpoints/latin/best.pt
 ```
+
+`--grid-mode` options: `single` (TileGrid3x3 only, default/fastest), `rotated` (3x3 or 3x3Rotated per sample), `all` (random choice among all 6 variants). All 6 variants: TileGrid3x3, TileGrid3x3Rotated, TileGrid3x3Pair, TileGrid3x3PairRotated, TileGrid3x3Orbital, TileGrid3x3OrbitalRotated (defined in `grid_augments.py`).
+
+**Training state:** No checkpoint exists yet for any script.
 
 #### `segment.py` — column-projection character segmenter
 
@@ -513,7 +582,7 @@ Always run scripts with `.venv\Scripts\python.exe` — the system Python lacks `
 - **Intents**: `message_content` intent is enabled — must also be enabled in the Discord Developer Portal.
 - **Secrets**: `DISCORD_BOT_TOKEN` and `HF_TOKEN` must never be hardcoded; load from `.env` (gitignored).
 - **No git co-author tags**: Do not add `Co-Authored-By: Claude` lines to commits in this repo.
-- **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Image/training/checkpoints/`, `Models/Datasets/char-dataset/`, `Models/Datasets/font-dataset/`, `Models/Datasets/windows-fonts/`, `Models/OCR/checkpoints/`, `Models/Typography/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, model checkpoints, or generated datasets.
+- **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Video/data/`, `Translation/0-Data/Synthesized/Audio/data/`, `Translation/0-Data/Synthesized/Image/data/`, `Translation/0-Data/Synthesized/Text/data/`, `Translation/0-Data/Synthesized/Video/data/`, `Translation/0-Data/Image/training/checkpoints/`, `Models/Datasets/char-dataset/`, `Models/Datasets/font-dataset/`, `Models/Datasets/windows-fonts/`, `Models/OCR/checkpoints/`, `Models/Typography/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, model checkpoints, or generated datasets.
 - **Test suite**: `pytest` tests exist under `Translation/1-Text/tests/`, `Translation/2-Image/tests/`, `Translation/3-Audio/tests/`, and `Translation/4-Video/tests/`. Run with `pytest` from the repo root. All four suites use mocks — no network calls required. (84 tests pass, 1 skips if `test_image.png` is absent.)
 - **Preprocessing variants**: All six variants are available in `ocr.py`; `preprocess()` (baseline) is the production default. Use `compare_preprocess.py` to evaluate before switching. `light_denoise` is the most consistent alternative.
 - **Public API surface**: `translate_text()` in `translate_text.py` is the public entry point; `_translate_to_english()` and `_translate_from_english()` are private implementation details.

@@ -1,6 +1,6 @@
 # Models Pipeline — Status & Next Steps
 
-_Last updated: 2026-06-23_
+_Last updated: 2026-06-25_
 
 ---
 
@@ -10,9 +10,13 @@ _Last updated: 2026-06-23_
 Models/
   Datasets/             ← data generators (shared)
     get_fonts.py        ← scan Windows fonts → font-dataset/ (font classifier)
-    render_chars.py     ← render chars → char-dataset/latin/ (char classifier)
+    render_chars.py     ← render chars → char-dataset/{latin,kana,hangul,cjk}/
     sample_tilegrid*.py ← visual sanity checks for grid augments
-    char-dataset/latin/ ← 62 classes, 77,799 images (render_chars output)
+    char-dataset/
+      latin/            ← 62 classes, 77,799 images
+      kana/             ← 172 classes (169 viable), 2,036 images
+      hangul/           ← 500 classes, 6,000 images
+      cjk/              ← 3,000 classes (1,312 viable), 10,506 images
     font-dataset/       ← 21,676 images (get_fonts output)
 
   OCR/
@@ -36,15 +40,41 @@ Models/
 
 ## Component Status
 
-### 1. Datasets — COMPLETE
+### 1. Datasets — COMPLETE (all 4 scripts)
 
-| Generator     | Output dir                         | Classes | Images  |
-|---------------|------------------------------------|---------|---------|
-| render_chars  | Datasets/char-dataset/latin/       | 62      | 77,799  |
-| get_fonts     | Datasets/font-dataset/             | —       | 21,676  |
+| Script  | Generator    | Output dir                    | Class dirs | Viable (≥5 img) | Images |
+|---------|-------------|-------------------------------|------------|-----------------|--------|
+| Latin   | render_chars | char-dataset/latin/           | 62         | 62              | 77,799 |
+| Kana    | render_chars | char-dataset/kana/            | 172        | 169             | 2,036  |
+| Hangul  | render_chars | char-dataset/hangul/          | 500        | 500             | 6,000  |
+| CJK     | render_chars | char-dataset/cjk/             | 3,000      | 1,312           | 10,506 |
+| Fonts   | get_fonts    | font-dataset/                 | —          | —               | 21,676 |
 
 Paths are anchored to `Models/Datasets/` via `_HERE = Path(__file__).parent`
 so both scripts work from any cwd.
+
+**Render parameters:** 2 sizes (32 px / 96 px), 2 modes (light/dark) → 4 images per font per class. Design decision: more than 2 sizes does not meaningfully improve recognition quality.
+
+**CJK coverage gap:** 1,688 of 3,000 CJK class dirs have zero images — no Windows system fonts cover those codepoints. The remaining 1,312 viable classes each have ≥2 Windows fonts (≥8 images). The gap is not fixable by changing render sizes; it requires fonts with broader CJK coverage (e.g. Noto CJK).
+
+**Extending CJK coverage (when Noto fonts are available):**
+```powershell
+cd Models\Datasets
+python render_chars.py --scripts cjk --cjk-top 3000 --extra-fonts-dir C:\path\to\noto-downloads
+```
+The `--extra-fonts-dir` flag is already implemented — fonts are used in-place, not copied to `windows-fonts/`. After re-render, pass `--min-per-class 1` to train on lower-coverage classes if desired.
+
+**Kana note:** 3 of 172 classes are empty (U+3094/3095/3096 — obsolete kana absent from Windows fonts). 169 viable classes with ≥5 images.
+
+**render_chars.py CLI reference:**
+```powershell
+python render_chars.py --scripts latin
+python render_chars.py --scripts kana
+python render_chars.py --scripts hangul --hangul-top 500
+python render_chars.py --scripts cjk    --cjk-top 3000
+python render_chars.py --scripts cjk    --cjk-top 3000 --extra-fonts-dir C:\path\to\noto
+python render_chars.py --scripts all    --hangul-top 500 --cjk-top 3000
+```
 
 ---
 
@@ -53,8 +83,8 @@ so both scripts work from any cwd.
 **Architecture:** DINOv2 ViT-S/14 backbone + linear head, two-phase training
 (head warm-up → backbone fine-tune).
 
-**Dataset:** 62 Latin character classes, 77,799 synthetic images rendered across
-multiple fonts, sizes (32 px / 96 px), and modes (dark/light).
+**Supported scripts:** Latin (62 classes), Kana (169 viable), Hangul (500), CJK (1,312 viable).
+Train per-script for scoped checkpoints; train `--scripts all` for a unified classifier.
 
 **Augmentation pipeline (heavy mode):**
 ```
@@ -85,19 +115,26 @@ TileGrid3x3PairRotated, TileGrid3x3Orbital, TileGrid3x3OrbitalRotated.
 **Training commands:**
 ```powershell
 cd Models/OCR
-# Quick smoke test (CPU, 5 epochs, head only)
-.venv\Scripts\python.exe -m char_classifier.train --epochs 5 --freeze-epochs 5
 
-# Full run (GPU recommended, all grid variants)
-.venv\Scripts\python.exe -m char_classifier.train \
-    --epochs 30 --freeze-epochs 5 --grid-mode all \
-    --backbone dinov2_vits14 --batch-size 64
+# Quick smoke test (CPU, any script)
+.venv\Scripts\python.exe -m char_classifier.train --scripts latin --epochs 5 --freeze-epochs 5 --max-per-class 20
+
+# Per-script full runs (GPU recommended)
+.venv\Scripts\python.exe -m char_classifier.train --scripts latin  --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+.venv\Scripts\python.exe -m char_classifier.train --scripts kana   --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+.venv\Scripts\python.exe -m char_classifier.train --scripts hangul --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+.venv\Scripts\python.exe -m char_classifier.train --scripts cjk    --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
 
 # Resume from checkpoint
-.venv\Scripts\python.exe -m char_classifier.train --resume checkpoints/best.pt
+.venv\Scripts\python.exe -m char_classifier.train --scripts latin --resume checkpoints/latin/best.pt
+
+# Lower class threshold (e.g. after Noto re-render adds more classes)
+.venv\Scripts\python.exe -m char_classifier.train --scripts cjk --min-per-class 1
 ```
 
-**Training state:** No checkpoint exists yet — never been trained.
+Checkpoints auto-scope to `checkpoints/<script>/` for single-script runs.
+
+**Training state:** No checkpoint exists yet for any script — never been trained.
 
 ---
 
@@ -176,16 +213,16 @@ Discord screenshot
   Discord response
 ```
 
-The char_classifier is a **Latin-only** recognizer (A-Z, a-z, 0-9, punctuation).
-CJK recognition continues to use EasyOCR's built-in CJK readers.
-The CRAFT detector is script-agnostic — it finds all text regions regardless of script.
+CJK recognition continues to use EasyOCR's built-in CJK readers until
+char_classifier is trained and validated on CJK scripts. The CRAFT detector is
+script-agnostic — it finds all text regions regardless of script.
 
 ---
 
 ## Next Steps (priority order)
 
 ### Immediate
-1. **Train char_classifier** — 62 classes, dataset ready. Start with
+1. **Train char_classifier (Latin)** — 62 classes, dataset ready. Start with
    `--grid-mode single` for a baseline, then compare `--grid-mode all`.
    GPU strongly recommended (CPU was ~3.7 s/iter on DINOv2 ViT-S).
 
@@ -195,23 +232,36 @@ The CRAFT detector is script-agnostic — it finds all text regions regardless o
    This replaces EasyOCR for Latin-script regions.
 
 ### Near-term
-3. **Train font_classifier** — 184 classes, baseline done. GPU run with 30
-   epochs + phase 2 backbone fine-tune needed.
+3. **Train char_classifier (Kana / Hangul / CJK)** — datasets ready.
+   Kana and Hangul are well-covered. CJK has 1,312 viable classes (10,506 images)
+   using Windows fonts — usable for a baseline. See below for expansion.
 
-4. **Evaluate char_classifier on real Discord crops** — test with actual
+4. **Expand CJK dataset via Noto fonts** — download Noto Sans/Serif CJK
+   (`NotoSansCJK-Regular.ttc`), then re-render:
+   ```powershell
+   python render_chars.py --scripts cjk --cjk-top 3000 --extra-fonts-dir C:\path\to\noto
+   ```
+   This unlocks the 1,688 zero-coverage classes (all within U+4E00–U+9FFF)
+   and increases per-class image count for the existing 1,312 classes.
+   Infrastructure (`--extra-fonts-dir`, `--min-per-class`) already in place.
+
+5. **Evaluate char_classifier on real Discord crops** — test with actual
    screenshots from `Translation/0-Data/Image/data/` using `sample_craft.py
    --image <path>` to exercise the full detect → crop path.
 
-5. **peer_pool integration** — `get_dataloaders` accepts `peer_pool` but it
+6. **peer_pool integration** — `get_dataloaders` accepts `peer_pool` but it
    is always passed as `None` today. Pre-loading all training images as a peer
    pool for `TileGrid3x3` / `TileGrid3x3Pair` would enable cross-character
    context grids (the Y-neighbour strategy from README.md).
 
 ### Longer-term
-6. **CJK character dataset** — `render_chars.py` currently renders Latin only.
-   Extend to Hangul, CJK Unified Ideographs, Hiragana/Katakana for a
-   unified char_classifier that covers all scripts the bot handles.
+7. **Train font_classifier** — 184 classes, baseline done. GPU run with 30
+   epochs + phase 2 backbone fine-tune needed.
 
-7. **Replace EasyOCR in TL-Bot.py** — once char_classifier is trained and
+8. **Replace EasyOCR in TL-Bot.py** — once char_classifier is trained and
    validated, swap the CRAFT + char_classifier pipeline into
    `Translation/2-Image/ocr.py` as an alternative recognizer path.
+
+9. **Korean routing fix in ocr_pipeline.py** — manga-ocr maps Korean crops
+   to Japanese; post-hoc Hangul check misses it. Needs EasyOCR-Korean parallel
+   pass or a script pre-classifier trained on char_classifier Hangul output.
