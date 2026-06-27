@@ -47,6 +47,10 @@ from collect_text import save_submission as save_text_submission  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "0-Data" / "Synthesized"))
 from collect_synthesized import save_synthesis as save_synthesis_output  # noqa: E402
 
+# Prompt chat module
+sys.path.insert(0, str(Path(__file__).parent / "Prompt"))
+from prompt import ask as prompt_ask  # noqa: E402
+
 # Logging rotation settings
 _LOG_MAX_BYTES    = 32 * 1024 * 1024   # 32 MiB per log file
 _LOG_BACKUP_COUNT = 5                  # number of rotated files to retain
@@ -142,6 +146,12 @@ _MAX_AUDIO_BYTES     = 8 * 1024 * 1024   # 8 MB  (Discord default upload cap)
 _MAX_VIDEO_BYTES     = 50 * 1024 * 1024  # 50 MB (covers Nitro Basic uploads)
 _MAX_TEXT_BYTES      = 50 * 1024          # 50 KB
 _MAX_TRANSLATE_CHARS = 3000               # character cap passed to translate_text
+_MAX_PROMPT_CHARS   = 2000               # user input cap for /prompt
+_MAX_HISTORY_TURNS  = 10                 # rolling window: 10 user/assistant pairs
+
+# Per-user conversation history for /prompt; keyed by Discord user ID.
+# Ephemeral — cleared on bot restart.
+_prompt_history: dict[int, list[dict]] = {}
 
 
 async def _fetch_header(url: str, n: int = 16) -> bytes:
@@ -1053,6 +1063,66 @@ async def _handle_test(channel: discord.abc.Messageable, author_name: str, lang_
         )
 
 
+async def _handle_prompt(text: str, channel: discord.abc.Messageable, author_id: int) -> None:
+    """Send user text to the chat model and reply, maintaining per-user history."""
+    if not text.strip():
+        await channel.send("_Usage: `/prompt <message>`_")
+        return
+
+    text = text[:_MAX_PROMPT_CHARS]
+    history = _prompt_history.setdefault(author_id, [])
+    history.append({"role": "user", "content": text})
+
+    # Trim to rolling window
+    max_messages = _MAX_HISTORY_TURNS * 2
+    if len(history) > max_messages:
+        del history[:len(history) - max_messages]
+
+    status = await channel.send("_Thinking..._")
+
+    try:
+        reply = await asyncio.to_thread(prompt_ask, list(history))
+    except Exception as e:
+        logger.exception("Prompt failed: %s", e)
+        history.pop()
+        await status.edit(content="_Prompt request failed. Please try again._")
+        return
+
+    history.append({"role": "assistant", "content": reply})
+
+    if len(reply) > _DISCORD_MSG_LIMIT:
+        reply = reply[:_DISCORD_MSG_LIMIT] + "\n_(response truncated)_"
+
+    await status.edit(content=reply)
+
+
+async def _handle_history(channel: discord.abc.Messageable, author_id: int) -> None:
+    """Display the calling user's conversation history."""
+    history = _prompt_history.get(author_id, [])
+    if not history:
+        await channel.send("_No conversation history yet. Start with `/prompt <message>`._")
+        return
+
+    lines = ["**Conversation history:**"]
+    turn = 0
+    for msg in history:
+        if msg["role"] == "user":
+            turn += 1
+            label = f"[{turn}] **You:** "
+        else:
+            label = f"[{turn}] **Bot:** "
+        content = msg["content"]
+        if len(content) > 200:
+            content = content[:200] + "…"
+        lines.append(f"{label}{content}")
+
+    output = "\n".join(lines)
+    if len(output) > _DISCORD_MSG_LIMIT:
+        output = output[:_DISCORD_MSG_LIMIT] + "\n_(truncated)_"
+
+    await channel.send(output)
+
+
 # Bot events
 @client.event
 async def on_ready():
@@ -1092,7 +1162,9 @@ async def on_message(message):
             "      image  → translated PNG (image: text replaced in-place; other inputs: text on plain background)\n"
             "      video  → MKV with original video and synthesized translated audio (video input only)\n"
             "/test <language> — Run a self-test with a built-in sample text and return all synthesis outputs\n"
-            "      Supported: english, chinese, japanese, korean, french"
+            "      Supported: english, chinese, japanese, korean, french\n"
+            "/prompt <message> — Ask the bot a question (conversation history is maintained per user)\n"
+            "/history — Show your conversation history"
         )
         return
 
@@ -1123,7 +1195,16 @@ async def on_message(message):
         await _handle_test(message.channel, message.author.name, lang_arg)
         return
 
-    await message.channel.send("Translate function not yet implemented, please stay tuned!")
+    if msg.startswith("/prompt"):
+        prompt_text = msg[len("/prompt"):].strip()
+        await _handle_prompt(prompt_text, message.channel, message.author.id)
+        return
+
+    if msg.startswith("/history"):
+        await _handle_history(message.channel, message.author.id)
+        return
+
+    await message.channel.send("Unrecognized command. Type `/help` for a list of available commands.")
 
 
 # Token loaded from DISCORD_BOT_TOKEN in .env or environment

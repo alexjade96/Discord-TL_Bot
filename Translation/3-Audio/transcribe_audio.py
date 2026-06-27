@@ -17,9 +17,33 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from huggingface_hub import InferenceClient
+
+try:
+    from huggingface_hub.errors import HfHubHTTPError
+except ImportError:
+    from huggingface_hub.utils import HfHubHTTPError  # type: ignore[no-redef]
+
+_RETRY_DELAYS = (1, 4)
+
+
+def _hf_call(fn, *args, **kwargs):
+    """Call fn(*args, **kwargs), retrying on 429/503 with backoff.
+
+    Respects the Retry-After response header when present.
+    Raises immediately for any other HTTP error or after all retries are spent.
+    """
+    for attempt, delay in enumerate(_RETRY_DELAYS + (None,)):
+        try:
+            return fn(*args, **kwargs)
+        except HfHubHTTPError as exc:
+            if exc.response.status_code not in (429, 503) or delay is None:
+                raise
+            wait = float(exc.response.headers.get("Retry-After", delay))
+            time.sleep(wait)
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "1-Text"))
 from detect import detect_language_with_confidence  # noqa: E402
@@ -83,7 +107,8 @@ def transcribe(
         source = str(source)
 
     try:
-        result = _client().automatic_speech_recognition(source, model=WHISPER_MODEL)
+        client = _client()
+        result = _hf_call(client.automatic_speech_recognition, source, model=WHISPER_MODEL)
     finally:
         if tmp_path:
             Path(tmp_path).unlink(missing_ok=True)

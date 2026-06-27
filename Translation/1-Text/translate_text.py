@@ -17,9 +17,33 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from pathlib import Path
 
 from huggingface_hub import InferenceClient
+
+try:
+    from huggingface_hub.errors import HfHubHTTPError
+except ImportError:
+    from huggingface_hub.utils import HfHubHTTPError  # type: ignore[no-redef]
+
+_RETRY_DELAYS = (1, 4)
+
+
+def _hf_call(fn, *args, **kwargs):
+    """Call fn(*args, **kwargs), retrying on 429/503 with backoff.
+
+    Respects the Retry-After response header when present.
+    Raises immediately for any other HTTP error or after all retries are spent.
+    """
+    for attempt, delay in enumerate(_RETRY_DELAYS + (None,)):
+        try:
+            return fn(*args, **kwargs)
+        except HfHubHTTPError as exc:
+            if exc.response.status_code not in (429, 503) or delay is None:
+                raise
+            wait = float(exc.response.headers.get("Retry-After", delay))
+            time.sleep(wait)
 
 from detect import (
     detect_language_with_confidence,
@@ -118,12 +142,12 @@ def _translate_to_english(
 
     c = client or _client()
     if override:
-        result = c.translation(text, model=override[0])
+        result = _hf_call(c.translation, text, model=override[0])
     elif src_lang:
-        result = c.translation(text, model=TRANSLATE_MODEL,
-                               src_lang=lang_code, tgt_lang="en")
+        result = _hf_call(c.translation, text, model=TRANSLATE_MODEL,
+                          src_lang=lang_code, tgt_lang="en")
     else:
-        result = c.translation(text, model=TRANSLATE_MODEL)
+        result = _hf_call(c.translation, text, model=TRANSLATE_MODEL)
     return result.translation_text
 
 
@@ -150,7 +174,7 @@ def _translate_from_english(
 
     c = client or _client()
     hf_model = override[1] if override else TRANSLATE_MODEL_TO.format(tgt_code)
-    result = c.translation(text, model=hf_model)
+    result = _hf_call(c.translation, text, model=hf_model)
     return result.translation_text
 
 
