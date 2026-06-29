@@ -250,7 +250,7 @@ def train(resume: bool, smoke_test: bool):
     scripts_arg = SCRIPTS if "all" not in SCRIPTS else ["all"]
 
     cmd = [
-        sys.executable, "-m", "char_classifier.train",
+        sys.executable, "-u", "-m", "char_classifier.train",
         "--scripts",        *scripts_arg,
         "--epochs",         str(EPOCHS),
         "--freeze-epochs",  str(FREEZE_EPOCHS),
