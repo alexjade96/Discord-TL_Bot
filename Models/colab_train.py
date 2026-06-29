@@ -28,6 +28,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 # ============================================================
@@ -163,6 +164,70 @@ def sync_dataset():
 
 
 # ============================================================
+# DATASET ZIP (run locally before first Colab session)
+# ============================================================
+
+def zip_dataset(output_path: str = None, scripts: list = None):
+    """
+    Zip Models/Datasets/char-dataset/ for upload to Drive.
+
+    The archive always contains a top-level 'char-dataset/' folder so that
+    sync_dataset()'s 'unzip -d <Datasets/>'' unpacks to the correct location.
+
+    Run locally (Windows):
+        python Models/colab_train.py --zip-dataset
+        python Models/colab_train.py --zip-dataset --scripts latin kana
+        python Models/colab_train.py --zip-dataset --zip-output D:/upload/char-dataset.zip
+
+    Then upload the resulting zip to:
+        My Drive/Colab Notebooks/tl-bot/char-dataset.zip
+    """
+    dataset_root = Path(__file__).parent / "Datasets" / "char-dataset"
+    if not dataset_root.exists():
+        print(f"[zip] ERROR: Dataset not found at {dataset_root}")
+        sys.exit(1)
+
+    # Filter to requested scripts only, or include all present subdirs
+    if scripts and "all" not in scripts:
+        subdirs = [dataset_root / s for s in scripts if (dataset_root / s).is_dir()]
+        missing = [s for s in scripts if not (dataset_root / s).is_dir()]
+        if missing:
+            print(f"[zip] WARNING: script dirs not found and will be skipped: {missing}")
+    else:
+        subdirs = [p for p in sorted(dataset_root.iterdir()) if p.is_dir()]
+
+    if not subdirs:
+        print("[zip] ERROR: No script subdirectories found to zip.")
+        sys.exit(1)
+
+    if output_path is None:
+        out = Path(__file__).parent.parent / "char-dataset.zip"
+    else:
+        out = Path(output_path)
+
+    print(f"[zip] Source : {dataset_root}")
+    print(f"[zip] Scripts: {[p.name for p in subdirs]}")
+    print(f"[zip] Output : {out}")
+    print("[zip] Zipping ...")
+
+    total_files = sum(1 for d in subdirs for f in d.rglob("*") if f.is_file())
+    written = 0
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for subdir in subdirs:
+            for file in sorted(subdir.rglob("*")):
+                if file.is_file():
+                    arcname = Path("char-dataset") / subdir.name / file.relative_to(subdir)
+                    zf.write(file, arcname)
+                    written += 1
+                    if written % 5000 == 0:
+                        print(f"  {written}/{total_files} files ...")
+
+    size_mb = out.stat().st_size / 1024 / 1024
+    print(f"[zip] Done: {written} files, {size_mb:.1f} MB -> {out}")
+    print(f"\n  Upload to Drive: My Drive/Colab Notebooks/tl-bot/char-dataset.zip")
+
+
+# ============================================================
 # TRAINING LAUNCHER
 # ============================================================
 
@@ -252,6 +317,10 @@ def parse_args():
                    help="Skip pip install step")
     p.add_argument("--setup-only",    action="store_true",
                    help="Run setup steps only, do not launch training")
+    p.add_argument("--zip-dataset",   action="store_true",
+                   help="Zip char-dataset for Drive upload (run locally, then exit)")
+    p.add_argument("--zip-output",    default=None,
+                   help="Output path for --zip-dataset (default: <repo-root>/char-dataset.zip)")
     return p.parse_args()
 
 
@@ -265,6 +334,10 @@ def main():
     print(f"  Backbone : {BACKBONE}")
     print(f"  Ckpt dir : {CKPT_DIR}")
     print("=" * 60)
+
+    if args.zip_dataset:
+        zip_dataset(output_path=args.zip_output, scripts=args.scripts)
+        return
 
     mount_drive()
 
