@@ -41,3 +41,9 @@ def load_checkpoint(path, model, optimizer=None, device=None):
     if optimizer and 'optimizer_state_dict' in ckpt:
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     return ckpt['epoch'], ckpt['val_acc'], ckpt.get('class_names', [])
+
+
+def peek_checkpoint_epoch(path) -> int:
+    """Return the saved epoch from a checkpoint without loading model weights."""
+    ckpt = torch.load(path, map_location='cpu', weights_only=False)
+    return ckpt.get('epoch', 0)

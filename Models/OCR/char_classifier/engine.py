@@ -66,6 +66,7 @@ def train_loop(
     model, train_loader, val_loader, loss_fn, optimizer,
     epochs: int, device, writer=None, epoch_offset: int = 0,
     mixup_alpha: float = 0.0, clip_grad: float = 1.0,
+    scheduler=None, on_epoch_end=None,
 ) -> Dict[str, List]:
     results = {
         'train_loss': [], 'train_acc': [],
@@ -94,4 +95,8 @@ def train_loop(
             writer.add_scalars('Loss',     {'train': t_loss, 'val': v_loss}, g)
             writer.add_scalars('Accuracy', {'train': t_acc,  'val': v_acc,
                                             'val_top3': v_top3, 'val_top5': v_top5}, g)
+        if scheduler:
+            scheduler.step()
+        if on_epoch_end:
+            on_epoch_end(g, v_acc)
     return results
