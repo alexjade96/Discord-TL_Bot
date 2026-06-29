@@ -37,7 +37,7 @@ from pathlib import Path
 
 # Google Drive folder where checkpoints and dataset zip are stored.
 # Create this folder on Drive before the first run.
-DRIVE_ROOT = "/content/drive/MyDrive/Colab Notebooks/tl-bot"
+DRIVE_ROOT = "/content/drive/MyDrive/Colab Notebooks/TL-Bot"
 
 # GitHub username — set this once, used to build REPO_URL below.
 GITHUB_USERNAME = "alexjade96"
@@ -336,7 +336,7 @@ def main():
     print("=" * 60)
 
     if args.zip_dataset:
-        zip_dataset(output_path=args.zip_output, scripts=args.scripts)
+        zip_dataset(output_path=args.zip_output, scripts=SCRIPTS)
         return
 
     mount_drive()
