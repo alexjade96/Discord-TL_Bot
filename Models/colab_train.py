@@ -232,15 +232,9 @@ def zip_dataset(output_path: str = None, scripts: list = None):
 # ============================================================
 
 def _last_pt_path() -> Path:
-    """
-    Auto-scope matches char_classifier.train's own scoping:
-    single script -> checkpoints/<script>/last.pt
-    multiple      -> checkpoints/last.pt
-    """
-    base = Path(CKPT_DIR)
-    if len(SCRIPTS) == 1 and SCRIPTS[0] != "all":
-        return base / SCRIPTS[0] / "last.pt"
-    return base / "last.pt"
+    # train.py only auto-scopes into <script>/ when using its default checkpoint
+    # dir. We always pass --checkpoint-dir explicitly, so it writes flat to CKPT_DIR.
+    return Path(CKPT_DIR) / "last.pt"
 
 
 def train(resume: bool, smoke_test: bool):
