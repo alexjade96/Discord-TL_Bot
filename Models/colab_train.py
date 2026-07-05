@@ -224,7 +224,7 @@ def zip_dataset(output_path: str = None, scripts: list = None):
 
     size_mb = out.stat().st_size / 1024 / 1024
     print(f"[zip] Done: {written} files, {size_mb:.1f} MB -> {out}")
-    print(f"\n  Upload to Drive: My Drive/Colab Notebooks/tl-bot/char-dataset.zip")
+    print(f"\n  Upload to Drive: My Drive/Colab Notebooks/TL-Bot/char-dataset.zip")
 
 
 # ============================================================
