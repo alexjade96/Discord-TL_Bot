@@ -53,15 +53,34 @@ REPO_DIR = "/content/Discord-TL_Bot"
 # Alternatively set to None to copy from DRIVE_ROOT/char-dataset/ directly.
 DATASET_ZIP = f"{DRIVE_ROOT}/char-dataset.zip"
 
-# Where checkpoints are written. Must be on Drive so they survive session end.
-CKPT_DIR = f"{DRIVE_ROOT}/checkpoints"
-
 # ============================================================
 # TRAINING HYPERPARAMETERS
 # ============================================================
 
 SCRIPTS       = ["latin"]        # latin | kana | hangul | cjk | all
 EPOCHS        = 30
+
+# CKPT_DIR is derived from SCRIPTS; use _make_ckpt_dir() whenever SCRIPTS may
+# have been overridden by CLI args (see main()).
+_ALL_SCRIPTS = {"latin", "kana", "hangul", "cjk"}
+
+
+def _make_ckpt_dir(scripts: list) -> str:
+    """Return the Drive checkpoint directory for the given script list.
+
+    - All four scripts (or 'all')  -> checkpoints/
+    - Single script                -> checkpoints/<script>/
+    - Subset of scripts            -> checkpoints/<a>_<b>_.../ (sorted)
+    """
+    s = _ALL_SCRIPTS if "all" in scripts else set(scripts)
+    if s >= _ALL_SCRIPTS:
+        return f"{DRIVE_ROOT}/checkpoints"
+    if len(scripts) == 1:
+        return f"{DRIVE_ROOT}/checkpoints/{scripts[0]}"
+    return f"{DRIVE_ROOT}/checkpoints/{'_'.join(sorted(s))}"
+
+
+CKPT_DIR = _make_ckpt_dir(SCRIPTS)
 FREEZE_EPOCHS = 5                # head-only warm-up epochs before backbone fine-tune
 UNFREEZE_BLOCKS = 4
 BATCH_SIZE    = 64
@@ -315,11 +334,23 @@ def parse_args():
                    help="Zip char-dataset for Drive upload (run locally, then exit)")
     p.add_argument("--zip-output",    default=None,
                    help="Output path for --zip-dataset (default: <repo-root>/char-dataset.zip)")
+    p.add_argument("--scripts",       nargs="+", default=None, metavar="SCRIPT",
+                   help="Override SCRIPTS config (e.g. --scripts latin kana)")
+    p.add_argument("--epochs",        type=int, default=None,
+                   help="Override EPOCHS config")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+
+    # Apply CLI overrides before anything reads these globals.
+    global SCRIPTS, EPOCHS, CKPT_DIR
+    if args.scripts is not None:
+        SCRIPTS = args.scripts
+        CKPT_DIR = _make_ckpt_dir(SCRIPTS)
+    if args.epochs is not None:
+        EPOCHS = args.epochs
 
     print("=" * 60)
     print(" Colab Training Setup")
