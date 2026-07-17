@@ -164,6 +164,9 @@ Datasets/
 font-dataset/
 windows-fonts/
 
+# Dataset zip (large binary; upload to Drive/Lightning manually)
+char-dataset.zip
+
 # Image files
 *.png
 *.jpg
