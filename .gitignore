@@ -164,6 +164,9 @@ Datasets/
 font-dataset/
 windows-fonts/
 
+# PyTorch Model Checkpoint files
+checkpoints/
+
 # Dataset zip (large binary; upload to Drive/Lightning manually)
 char-dataset.zip
 
@@ -180,9 +183,6 @@ Translation/*/tests/outputs/
 # Audio / video outputs
 *.mp3
 *.mkv
-
-# PyTorch Model Checkpoint files
-checkpoints/
 
 # EasyOCR training artefacts
 Translation/2-Image/training/lmdb_*/
