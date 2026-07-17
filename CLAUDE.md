@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Discord bot (`TL-Bot.py`) that translates text and images for users. The bot is triggered by @mention and routes `/translate` commands based on attachment type (image, audio, text, video) or inline text. All four translation pipelines are fully wired into the bot. Translated output can optionally be re-synthesized as an audio file, a rendered image, a plain text file, or a video via `--synthesize`.
+Discord bot (`TL-Bot.py`) that translates text and images for users. The bot is triggered by @mention and routes `/translate` commands based on attachment type (image, audio, text, video) or inline text. All four translation pipelines are fully wired into the bot. Translated output can optionally be re-synthesized as an audio file, a rendered image, a plain text file, or a video via `--synthesize`. A `/prompt` command provides conversational LLM chat via Ollama (local) with HF Inference API fallback.
 
 ## Running the Bot
 
@@ -36,6 +36,7 @@ The bot only responds when `@TL-Bot` is the first token. Command routing:
 - `/translate [flags]` + text file attachment → read, decode, then translate
 - `/translate [flags]` + video attachment → extract audio, transcribe (Whisper), then translate
 - `/test [language]` → translate a built-in sample script and return all three synthesis outputs (`.txt`, `.mp3`, `.png`)
+- `/prompt <text>` → conversational LLM chat (multi-turn, per-channel history); sends `_Thinking..._` immediately then edits with reply
 - Unrecognized command → fallback message
 
 Flags parsed by `_parse_translate_flags()` in `TL-Bot.py` (called once per `/translate` command, shared by attachment and inline paths):
@@ -60,6 +61,7 @@ Language names/codes are resolved via `parse_language_hint()` in `Translation/1-
 - `_handle_text_inline(text, ...)` — same-lang check + `_run_text_translate`
 - `_handle_video(attachment, ...)` — size gate + magic byte check + extract audio (PyAV) + Whisper transcribe + translate + collect + optional synthesis
 - `_handle_test(channel, author_name, lang_arg)` — resolves language key, translates built-in script, sends `.txt`/`.mp3`/`.png` in one message
+- `_handle_prompt(text, channel, author_name)` — sends `_Thinking..._` status, runs `prompt.ask()` in a thread, edits status with reply; per-channel history (`_PROMPT_HISTORY`) capped at `_PROMPT_HISTORY_LIMIT` turns
 
 Shared helpers:
 
@@ -72,6 +74,22 @@ Shared helpers:
 - Size limits: `_MAX_IMAGE_BYTES = 8 MB`, `_MAX_AUDIO_BYTES = 8 MB`, `_MAX_TEXT_BYTES = 50 KB`, `_MAX_VIDEO_BYTES = 50 MB`, `_MAX_TRANSLATE_CHARS = 3000` (text content cap before translation)
 
 ## Architecture
+
+### Prompt / LLM Chat (`Prompt/`)
+
+- **`prompt.py`** — Conversational LLM chat with Ollama-first routing and HF Inference API fallback:
+  - `ask(messages)` — public API; accepts a list of `{"role": ..., "content": ...}` dicts and returns the assistant reply as a plain string.
+  - Routing: tries Ollama (`http://localhost:11434`, model `llama3.1`) first via `InferenceClient(base_url=..., api_key="ollama")`. If Ollama is not running (any non-`HfHubHTTPError` exception), falls through to HF Inference API (`meta-llama/Llama-3.1-8B-Instruct`). A real `HfHubHTTPError` from Ollama propagates immediately without fallback.
+  - HF fallback requires `HF_TOKEN` env var and an enabled inference provider (Together AI, Fireworks AI, etc.) in HF account settings → Inference Providers.
+  - `_hf_call(fn, ...)` — retry wrapper; retries on 429/503 up to `len(_RETRY_DELAYS)` times, respecting `Retry-After` header. `_RETRY_DELAYS = (1, 4)`.
+  - `_OLLAMA_URL = "http://localhost:11434"`, `_OLLAMA_MODEL = "llama3.1"`, `_HF_MODEL = "meta-llama/Llama-3.1-8B-Instruct"`, `_MAX_NEW_TOKENS = 512`.
+
+- **`tests/test_prompt.py`** — 18 unit tests + up to 4 E2E tests:
+  - `TestAskOllama` (7): Ollama happy path (return type, content, whitespace strip, correct model, message passing, multi-turn, empty messages)
+  - `TestAskHFFallback` (4): ConnectionError → HF fallback; HF uses `_HF_MODEL`; `HfHubHTTPError` propagates; no token → `EnvironmentError`
+  - `TestHfCallRetry` (7): retry on 429/503, Retry-After header, backoff progression, exhausted retries, non-retriable immediate raise
+  - `TestAskOllamaE2E` (4): skipped if Ollama not running (auto-detected); real Ollama calls
+  - `TestAskHFE2E` (1): skipped if no `HF_TOKEN`; patches `_OLLAMA_URL` to an invalid port to force HF path
 
 ### Text Translation (`Translation/1-Text/`)
 

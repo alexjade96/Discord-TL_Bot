@@ -338,6 +338,11 @@ def parse_args():
                    help="Override SCRIPTS config (e.g. --scripts latin kana)")
     p.add_argument("--epochs",        type=int, default=None,
                    help="Override EPOCHS config")
+    p.add_argument("--storage-root",  default=None,
+                   help="Override DRIVE_ROOT for checkpoints and dataset zip "
+                        "(Lightning AI: /teamspace/studios/this_studio/TL-Bot)")
+    p.add_argument("--repo-dir",      default=None,
+                   help="Override REPO_DIR (local runs: path to the cloned repo root)")
     return p.parse_args()
 
 
@@ -345,12 +350,17 @@ def main():
     args = parse_args()
 
     # Apply CLI overrides before anything reads these globals.
-    global SCRIPTS, EPOCHS, CKPT_DIR
+    global SCRIPTS, EPOCHS, CKPT_DIR, DRIVE_ROOT, DATASET_ZIP, REPO_DIR
+    if args.storage_root is not None:
+        DRIVE_ROOT  = args.storage_root
+        DATASET_ZIP = f"{DRIVE_ROOT}/char-dataset.zip"
+    if args.repo_dir is not None:
+        REPO_DIR = args.repo_dir
     if args.scripts is not None:
         SCRIPTS = args.scripts
-        CKPT_DIR = _make_ckpt_dir(SCRIPTS)
     if args.epochs is not None:
         EPOCHS = args.epochs
+    CKPT_DIR = _make_ckpt_dir(SCRIPTS)
 
     print("=" * 60)
     print(" Colab Training Setup")

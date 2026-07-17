@@ -98,5 +98,9 @@ def train_loop(
         if scheduler:
             scheduler.step()
         if on_epoch_end:
-            on_epoch_end(g, v_acc)
+            on_epoch_end(g, v_acc, {
+                'train_loss': t_loss, 'train_acc': t_acc,
+                'val_loss': v_loss, 'val_acc': v_acc,
+                'val_top3': v_top3, 'val_top5': v_top5,
+            })
     return results

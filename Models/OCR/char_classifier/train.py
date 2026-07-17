@@ -180,8 +180,9 @@ def main():
     # --- Shared epoch-end callback: saves last.pt every epoch, best.pt on improvement ---
     best_val_acc_ref  = [best_val_acc]
     current_optimizer = [optimizer]
+    _epoch_log: list = []
 
-    def on_epoch_end(g, v_acc):
+    def on_epoch_end(g, v_acc, metrics=None):
         save_checkpoint(model, current_optimizer[0], g, v_acc,
                         ckpt_dir / 'last.pt', class_names)
         if v_acc > best_val_acc_ref[0]:
@@ -189,6 +190,19 @@ def main():
             save_checkpoint(model, current_optimizer[0], g, v_acc,
                             ckpt_dir / 'best.pt', class_names)
             print(f'[train] New best: {v_acc:.4f} -> saved best.pt')
+        if metrics:
+            _epoch_log.append({'epoch': g, **{k: round(float(v), 6) for k, v in metrics.items()}})
+            try:
+                import json as _json
+                (ckpt_dir / 'progress.json').write_text(_json.dumps({
+                    'scripts':       list(scripts),
+                    'total_epochs':  args.epochs,
+                    'best_val_acc':  round(float(best_val_acc_ref[0]), 6),
+                    'completed':     g,
+                    'history':       _epoch_log,
+                }, indent=2))
+            except Exception:
+                pass
 
     try:
         # ---- Phase 1: head warm-up (skip if resuming into phase 2) ----
