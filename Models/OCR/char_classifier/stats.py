@@ -6,13 +6,36 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 
 def plot_curves(results: Dict[str, List], save_path: str = None):
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-    ax1.plot(results['train_loss'], label='train')
-    ax1.plot(results['val_loss'],   label='val')
-    ax1.set_title('Loss'); ax1.set_xlabel('Epoch'); ax1.legend()
-    ax2.plot(results['train_acc'], label='train')
-    ax2.plot(results['val_acc'],   label='val')
-    ax2.set_title('Accuracy'); ax2.set_xlabel('Epoch'); ax2.legend()
+    has_f1 = bool(results.get('f1'))
+    has_lr = bool(results.get('lr'))
+    n_cols  = 2 + int(has_f1) + int(has_lr)
+    fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 4))
+    col = 0
+
+    axes[col].plot(results['train_loss'], label='train')
+    axes[col].plot(results['val_loss'],   label='val')
+    axes[col].set_title('Loss'); axes[col].set_xlabel('Epoch'); axes[col].legend()
+    col += 1
+
+    axes[col].plot(results['train_acc'], label='train acc')
+    axes[col].plot(results['val_acc'],   label='val acc')
+    axes[col].set_title('Accuracy'); axes[col].set_xlabel('Epoch'); axes[col].legend()
+    col += 1
+
+    if has_f1:
+        axes[col].plot(results['f1'], label='val f1 (macro)', color='tab:green')
+        if results.get('precision'):
+            axes[col].plot(results['precision'], label='precision', linestyle='--', alpha=0.7)
+        if results.get('recall'):
+            axes[col].plot(results['recall'],    label='recall',    linestyle=':', alpha=0.7)
+        axes[col].set_title('Val Precision / Recall / F1'); axes[col].set_xlabel('Epoch'); axes[col].legend()
+        col += 1
+
+    if has_lr:
+        axes[col].plot(results['lr'], color='tab:orange')
+        axes[col].set_title('Learning Rate'); axes[col].set_xlabel('Epoch')
+        axes[col].set_yscale('log')
+
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=120, bbox_inches='tight')

@@ -6,6 +6,7 @@
 #   python -m char_classifier.train --resume checkpoints/latin/last.pt --epochs 30
 import argparse
 import json
+import time
 from pathlib import Path
 
 import torch
@@ -175,57 +176,114 @@ def main():
         'train_loss': [], 'train_acc': [],
         'val_loss':   [], 'val_acc':   [],
         'val_top3':   [], 'val_top5':  [],
+        'precision':  [], 'recall':    [], 'f1': [],
+        'grad_norm':  [], 'lr':        [],
     }
 
     # --- Shared epoch-end callback: saves last.pt every epoch, best.pt on improvement ---
     best_val_acc_ref  = [best_val_acc]
     current_optimizer = [optimizer]
-    _epoch_log: list = []
+
+    # Seed history from a prior run's progress.json so curves.png covers the full run.
+    _progress_path = ckpt_dir / 'progress.json'
+    try:
+        _prior = json.loads(_progress_path.read_text())
+        _epoch_log: list = _prior.get('history', [])
+        for _e in _epoch_log:
+            for k in all_results:
+                if k in _e:
+                    all_results[k].append(_e[k])
+        _best_epoch_ref = [max(_epoch_log, key=lambda e: e.get('val_acc', 0.0)).get('epoch', start_epoch)
+                           if _epoch_log else start_epoch]
+    except Exception:
+        _epoch_log = []
+        _best_epoch_ref = [start_epoch]
+
+    _t_ref = [time.monotonic()]
 
     def on_epoch_end(g, v_acc, metrics=None):
         from datetime import datetime
-        _phase = 1 if g < freeze_epochs else 2
+        _now        = time.monotonic()
+        _epoch_secs = round(_now - _t_ref[0], 1)
+        _t_ref[0]   = _now
+
+        _phase  = 1 if g <= freeze_epochs else 2
+        _lr     = round(float(metrics['lr']),        8) if metrics else 0.0
+        _gnorm  = round(float(metrics['grad_norm']), 4) if metrics else 0.0
+        _prec   = round(float(metrics['precision']), 6) if metrics else 0.0
+        _rec    = round(float(metrics['recall']),    6) if metrics else 0.0
+        _f1     = round(float(metrics['f1']),        6) if metrics else 0.0
+        _overfit = round(float(metrics['train_acc'] - v_acc), 6) if metrics else 0.0
+        _prev_val_acc    = _epoch_log[-1]['val_acc'] if _epoch_log else float(v_acc)
+        _val_acc_delta   = round(float(v_acc) - _prev_val_acc, 6)
+        _epochs_since_best = g - _best_epoch_ref[0]
+        _epochs_remaining  = args.epochs - g
+
         _meta = {
-            'epoch':            g,
-            'total_epochs':     args.epochs,
-            'epochs_remaining': args.epochs - g,
-            'phase':            _phase,
-            'phase_label':      'head warm-up' if _phase == 1 else 'backbone fine-tune',
-            'val_acc':          round(float(v_acc), 6),
-            'best_val_acc':     round(float(best_val_acc_ref[0]), 6),
-            'scripts':          list(scripts),
-            'backbone':         args.backbone,
-            'freeze_epochs':    args.freeze_epochs,
-            'saved_at':         datetime.now().isoformat(timespec='seconds'),
+            'epoch':             g,
+            'total_epochs':      args.epochs,
+            'epochs_remaining':  _epochs_remaining,
+            'phase':             _phase,
+            'phase_label':       'head warm-up' if _phase == 1 else 'backbone fine-tune',
+            'val_acc':           round(float(v_acc), 6),
+            'best_val_acc':      round(float(best_val_acc_ref[0]), 6),
+            'best_epoch':        _best_epoch_ref[0],
+            'epochs_since_best': _epochs_since_best,
+            'f1':                _f1,
+            'lr':                _lr,
+            'epoch_secs':        _epoch_secs,
+            'scripts':           list(scripts),
+            'backbone':          args.backbone,
+            'freeze_epochs':     args.freeze_epochs,
+            'saved_at':          datetime.now().isoformat(timespec='seconds'),
         }
         save_checkpoint(model, current_optimizer[0], g, v_acc,
                         ckpt_dir / 'last.pt', class_names, meta=_meta)
         if v_acc > best_val_acc_ref[0]:
             best_val_acc_ref[0] = v_acc
+            _best_epoch_ref[0]  = g
             _meta['best_val_acc'] = round(float(v_acc), 6)
+            _meta['best_epoch']   = g
             save_checkpoint(model, current_optimizer[0], g, v_acc,
                             ckpt_dir / 'best.pt', class_names, meta=_meta)
-            print(f'[train] New best: {v_acc:.4f} -> saved best.pt')
+            print(f'[train] New best: {v_acc:.4f}  f1 {_f1:.4f} -> saved best.pt')
         if metrics:
-            _epoch_log.append({'epoch': g, **{k: round(float(v), 6) for k, v in metrics.items()}})
-            try:
-                import json as _json
-                (ckpt_dir / 'progress.json').write_text(_json.dumps({
-                    'scripts':          list(scripts),
-                    'backbone':         args.backbone,
-                    'total_epochs':     args.epochs,
-                    'freeze_epochs':    args.freeze_epochs,
-                    'completed':        g,
-                    'epochs_remaining': args.epochs - g,
-                    'phase':            1 if g < args.freeze_epochs else 2,
-                    'phase_label':      'head warm-up' if g < args.freeze_epochs else 'backbone fine-tune',
-                    'best_val_acc':     round(float(best_val_acc_ref[0]), 6),
-                    'last_val_acc':     round(float(v_acc), 6),
-                    'saved_at':         datetime.now().isoformat(timespec='seconds'),
-                    'history':          _epoch_log,
-                }, indent=2))
-            except Exception:
-                pass
+            _epoch_log.append({
+                'epoch':             g,
+                'lr':                _lr,
+                'grad_norm':         _gnorm,
+                'epoch_secs':        _epoch_secs,
+                'overfit_gap':       _overfit,
+                'val_acc_delta':     _val_acc_delta,
+                'epochs_since_best': _epochs_since_best,
+                **{k: round(float(v), 6)
+                   for k, v in metrics.items()
+                   if k not in ('lr', 'grad_norm')},
+            })
+        _progress_path.write_text(json.dumps({
+            'scripts':           list(scripts),
+            'backbone':          args.backbone,
+            'total_epochs':      args.epochs,
+            'freeze_epochs':     args.freeze_epochs,
+            'completed':         g,
+            'epochs_remaining':  _epochs_remaining,
+            'phase':             _phase,
+            'phase_label':       'head warm-up' if _phase == 1 else 'backbone fine-tune',
+            'best_val_acc':      round(float(best_val_acc_ref[0]), 6),
+            'best_epoch':        _best_epoch_ref[0],
+            'epochs_since_best': _epochs_since_best,
+            'last_val_acc':      round(float(v_acc), 6),
+            'last_val_acc_delta': _val_acc_delta,
+            'last_f1':           _f1,
+            'last_precision':    _prec,
+            'last_recall':       _rec,
+            'last_lr':           _lr,
+            'last_grad_norm':    _gnorm,
+            'last_epoch_secs':   _epoch_secs,
+            'eta_secs':          round(_epoch_secs * _epochs_remaining),
+            'saved_at':          datetime.now().isoformat(timespec='seconds'),
+            'history':           _epoch_log,
+        }, indent=2))
 
     try:
         # ---- Phase 1: head warm-up (skip if resuming into phase 2) ----
