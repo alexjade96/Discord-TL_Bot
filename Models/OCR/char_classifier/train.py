@@ -211,11 +211,18 @@ def main():
             try:
                 import json as _json
                 (ckpt_dir / 'progress.json').write_text(_json.dumps({
-                    'scripts':       list(scripts),
-                    'total_epochs':  args.epochs,
-                    'best_val_acc':  round(float(best_val_acc_ref[0]), 6),
-                    'completed':     g,
-                    'history':       _epoch_log,
+                    'scripts':          list(scripts),
+                    'backbone':         args.backbone,
+                    'total_epochs':     args.epochs,
+                    'freeze_epochs':    args.freeze_epochs,
+                    'completed':        g,
+                    'epochs_remaining': args.epochs - g,
+                    'phase':            1 if g < args.freeze_epochs else 2,
+                    'phase_label':      'head warm-up' if g < args.freeze_epochs else 'backbone fine-tune',
+                    'best_val_acc':     round(float(best_val_acc_ref[0]), 6),
+                    'last_val_acc':     round(float(v_acc), 6),
+                    'saved_at':         datetime.now().isoformat(timespec='seconds'),
+                    'history':          _epoch_log,
                 }, indent=2))
             except Exception:
                 pass
