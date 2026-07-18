@@ -20,7 +20,8 @@ def get_device() -> torch.device:
     return torch.device('cpu')
 
 
-def save_checkpoint(model, optimizer, epoch: int, val_acc: float, path, class_names: list):
+def save_checkpoint(model, optimizer, epoch: int, val_acc: float, path, class_names: list,
+                    meta: dict = None):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -29,6 +30,7 @@ def save_checkpoint(model, optimizer, epoch: int, val_acc: float, path, class_na
             'optimizer_state_dict': optimizer.state_dict(),
             'val_acc': val_acc,
             'class_names': class_names,
+            'meta': meta or {},
         },
         path,
     )
@@ -47,3 +49,19 @@ def peek_checkpoint_epoch(path) -> int:
     """Return the saved epoch from a checkpoint without loading model weights."""
     ckpt = torch.load(path, map_location='cpu', weights_only=False)
     return ckpt.get('epoch', 0)
+
+
+def print_checkpoint_info(path):
+    """Print a human-readable summary of a checkpoint's training state."""
+    ckpt = torch.load(path, map_location='cpu', weights_only=False)
+    epoch    = ckpt.get('epoch', '?')
+    val_acc  = ckpt.get('val_acc', 0.0)
+    meta     = ckpt.get('meta', {})
+    print(f"  Checkpoint : {path}")
+    print(f"  Epoch      : {epoch} / {meta.get('total_epochs', '?')}"
+          f"  ({meta.get('epochs_remaining', '?')} remaining)")
+    print(f"  Phase      : {meta.get('phase', '?')} — {meta.get('phase_label', '')}")
+    print(f"  Val acc    : {val_acc:.4f}  (best so far: {meta.get('best_val_acc', val_acc):.4f})")
+    print(f"  Scripts    : {meta.get('scripts', '?')}")
+    print(f"  Backbone   : {meta.get('backbone', '?')}")
+    print(f"  Saved at   : {meta.get('saved_at', 'unknown')}")

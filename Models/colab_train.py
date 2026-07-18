@@ -287,7 +287,7 @@ def train(resume: bool, smoke_test: bool):
 
     if resume:
         if last_pt.exists():
-            print(f"[train] Resuming from {last_pt}  (epoch {_peek_epoch(last_pt)})")
+            _print_checkpoint_info(last_pt)
             cmd += ["--resume", str(last_pt)]
         else:
             print(f"[train] --resume requested but {last_pt} not found — starting fresh.")
@@ -306,6 +306,25 @@ def _peek_epoch(path: Path) -> int:
         return ckpt.get("epoch", "?")
     except Exception:
         return "?"
+
+
+def _print_checkpoint_info(path: Path):
+    try:
+        import torch
+        ckpt  = torch.load(str(path), map_location="cpu", weights_only=False)
+        epoch = ckpt.get("epoch", "?")
+        vacc  = ckpt.get("val_acc", 0.0)
+        meta  = ckpt.get("meta", {})
+        print(f"[train] Resuming from {path}")
+        print(f"  Epoch      : {epoch} / {meta.get('total_epochs', '?')}"
+              f"  ({meta.get('epochs_remaining', '?')} remaining)")
+        print(f"  Phase      : {meta.get('phase', '?')} — {meta.get('phase_label', '')}")
+        print(f"  Val acc    : {vacc:.4f}  (best: {meta.get('best_val_acc', vacc):.4f})")
+        print(f"  Scripts    : {meta.get('scripts', '?')}")
+        print(f"  Backbone   : {meta.get('backbone', '?')}")
+        print(f"  Saved at   : {meta.get('saved_at', 'unknown')}")
+    except Exception:
+        print(f"[train] Resuming from {path}  (epoch {_peek_epoch(path)})")
 
 
 # ============================================================

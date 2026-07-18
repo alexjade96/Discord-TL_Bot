@@ -183,12 +183,28 @@ def main():
     _epoch_log: list = []
 
     def on_epoch_end(g, v_acc, metrics=None):
+        from datetime import datetime
+        _phase = 1 if g < freeze_epochs else 2
+        _meta = {
+            'epoch':            g,
+            'total_epochs':     args.epochs,
+            'epochs_remaining': args.epochs - g,
+            'phase':            _phase,
+            'phase_label':      'head warm-up' if _phase == 1 else 'backbone fine-tune',
+            'val_acc':          round(float(v_acc), 6),
+            'best_val_acc':     round(float(best_val_acc_ref[0]), 6),
+            'scripts':          list(scripts),
+            'backbone':         args.backbone,
+            'freeze_epochs':    args.freeze_epochs,
+            'saved_at':         datetime.now().isoformat(timespec='seconds'),
+        }
         save_checkpoint(model, current_optimizer[0], g, v_acc,
-                        ckpt_dir / 'last.pt', class_names)
+                        ckpt_dir / 'last.pt', class_names, meta=_meta)
         if v_acc > best_val_acc_ref[0]:
             best_val_acc_ref[0] = v_acc
+            _meta['best_val_acc'] = round(float(v_acc), 6)
             save_checkpoint(model, current_optimizer[0], g, v_acc,
-                            ckpt_dir / 'best.pt', class_names)
+                            ckpt_dir / 'best.pt', class_names, meta=_meta)
             print(f'[train] New best: {v_acc:.4f} -> saved best.pt')
         if metrics:
             _epoch_log.append({'epoch': g, **{k: round(float(v), 6) for k, v in metrics.items()}})
