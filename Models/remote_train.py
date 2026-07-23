@@ -256,9 +256,12 @@ def _last_pt_path() -> Path:
     return Path(CKPT_DIR) / "last.pt"
 
 
+_RCLONE_CFG = "/root/.config/rclone/rclone.conf"
+
+
 def _rclone_sync(src: str, dst: str):
     print(f"\n[sync] {src} → {dst}")
-    r = subprocess.run(["rclone", "sync", src, dst])
+    r = subprocess.run(["rclone", "--config", _RCLONE_CFG, "sync", src, dst])
     if r.returncode != 0:
         print(f"[sync] Warning: rclone returned {r.returncode}")
     else:
