@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 """
-colab_train.py -- Colab session setup + training launcher for char_classifier.
+remote_train.py -- Remote/cloud session setup + training launcher for char_classifier.
 
 Usage (VS Code tunnel terminal or Colab shell cell):
 
     # First session — full setup then train
-    python Models/colab_train.py
+    python Models/remote_train.py
 
     # Subsequent sessions — skip clone/dataset sync, resume from last.pt
-    python Models/colab_train.py --resume
+    python Models/remote_train.py --resume
 
     # Skip individual setup steps if already done this session
-    python Models/colab_train.py --resume --skip-clone --skip-dataset
+    python Models/remote_train.py --resume --skip-clone --skip-dataset
 
     # Smoke test (10 images/class, 4 epochs) before committing to a full run
-    python Models/colab_train.py --smoke-test
+    python Models/remote_train.py --smoke-test
 
 Bootstrap (paste into a fresh Colab terminal before the repo is cloned):
 
     git clone https://github.com/alexjade96/Discord-TL_Bot /content/Discord-TL_Bot
-    python /content/Discord-TL_Bot/Models/colab_train.py
+    python /content/Discord-TL_Bot/Models/remote_train.py
 """
 
 import argparse
@@ -45,7 +45,7 @@ GITHUB_USERNAME = "alexjade96"
 # GitHub repo URL — built from GITHUB_USERNAME; override the whole string if needed.
 REPO_URL = f"https://github.com/{GITHUB_USERNAME}/Discord-TL_Bot.git"
 
-# Where the repo is cloned on the Colab VM (fast local SSD).
+# Where the repo is cloned on the remote VM (fast local SSD).
 REPO_DIR = "/content/Discord-TL_Bot"
 
 # Path to a zipped copy of char-dataset on Drive.
@@ -66,7 +66,7 @@ _ALL_SCRIPTS = {"latin", "kana", "hangul", "cjk"}
 
 
 def _make_ckpt_dir(scripts: list) -> str:
-    """Return the Drive checkpoint directory for the given script list.
+    """Return the checkpoint directory for the given script list.
 
     - All four scripts (or 'all')  -> checkpoints/
     - Single script                -> checkpoints/<script>/
@@ -132,7 +132,7 @@ def clone_or_update_repo():
     else:
         print(f"[setup] Cloning {REPO_URL} -> {REPO_DIR}")
         if GITHUB_USERNAME == "YOUR_USERNAME":
-            print("[setup] ERROR: Set GITHUB_USERNAME in colab_train.py before running.")
+            print("[setup] ERROR: Set GITHUB_USERNAME in remote_train.py before running.")
             sys.exit(1)
         _run(f"git clone {REPO_URL} {REPO_DIR}")
 
@@ -183,7 +183,7 @@ def sync_dataset():
 
 
 # ============================================================
-# DATASET ZIP (run locally before first Colab session)
+# DATASET ZIP (run locally before first remote session)
 # ============================================================
 
 def zip_dataset(output_path: str = None, scripts: list = None):
@@ -194,12 +194,12 @@ def zip_dataset(output_path: str = None, scripts: list = None):
     sync_dataset()'s 'unzip -d <Datasets/>'' unpacks to the correct location.
 
     Run locally (Windows):
-        python Models/colab_train.py --zip-dataset
-        python Models/colab_train.py --zip-dataset --scripts latin kana
-        python Models/colab_train.py --zip-dataset --zip-output D:/upload/char-dataset.zip
+        python Models/remote_train.py --zip-dataset
+        python Models/remote_train.py --zip-dataset --scripts latin kana
+        python Models/remote_train.py --zip-dataset --zip-output D:/upload/char-dataset.zip
 
     Then upload the resulting zip to:
-        My Drive/Colab Notebooks/tl-bot/char-dataset.zip
+        My Drive/Colab Notebooks/TL-Bot/char-dataset.zip
     """
     dataset_root = Path(__file__).parent / "Datasets" / "char-dataset"
     if not dataset_root.exists():
@@ -256,7 +256,30 @@ def _last_pt_path() -> Path:
     return Path(CKPT_DIR) / "last.pt"
 
 
-def train(resume: bool, smoke_test: bool):
+def _rclone_sync(src: str, dst: str):
+    print(f"\n[sync] {src} → {dst}")
+    r = subprocess.run(["rclone", "sync", src, dst])
+    if r.returncode != 0:
+        print(f"[sync] Warning: rclone returned {r.returncode}")
+    else:
+        print("[sync] OK")
+
+
+def _sync_loop(proc, src: str, dst: str, interval: int = 600):
+    """Sync checkpoints every `interval` seconds while training subprocess runs."""
+    import time
+    print(f"[sync] Auto-sync every {interval}s: {src} → {dst}")
+    last = 0.0
+    while proc.poll() is None:
+        if time.time() - last >= interval:
+            _rclone_sync(src, dst)
+            last = time.time()
+        time.sleep(10)
+    _rclone_sync(src, dst)
+    print("[sync] Final sync complete.")
+
+
+def train(resume: bool, smoke_test: bool, sync_to: str = None):
     ocr_dir = Path(REPO_DIR) / "Models" / "OCR"
     last_pt = _last_pt_path()
 
@@ -295,8 +318,14 @@ def train(resume: bool, smoke_test: bool):
     print(f"\n[train] Working dir : {ocr_dir}")
     print(f"[train] Command     :\n  " + " ".join(str(c) for c in cmd) + "\n")
 
-    result = subprocess.run(cmd, cwd=str(ocr_dir))
-    sys.exit(result.returncode)
+    if sync_to:
+        sync_src = str(Path(DRIVE_ROOT) / "checkpoints")
+        proc = subprocess.Popen(cmd, cwd=str(ocr_dir))
+        _sync_loop(proc, sync_src, sync_to)
+        sys.exit(proc.returncode)
+    else:
+        result = subprocess.run(cmd, cwd=str(ocr_dir))
+        sys.exit(result.returncode)
 
 
 def _peek_epoch(path: Path) -> int:
@@ -333,7 +362,7 @@ def _print_checkpoint_info(path: Path):
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Colab session setup + char_classifier training launcher",
+        description="Remote/cloud session setup + char_classifier training launcher",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -362,6 +391,10 @@ def parse_args():
                         "(Lightning AI: /teamspace/studios/this_studio/TL-Bot)")
     p.add_argument("--repo-dir",      default=None,
                    help="Override REPO_DIR (local runs: path to the cloned repo root)")
+    p.add_argument("--sync-to",       default=None,
+                   help="rclone destination for automatic checkpoint sync during training "
+                        "(e.g. 'gdrive:Colab Notebooks/TL-Bot/checkpoints/'). "
+                        "Syncs every 10 minutes and once on finish. Kaggle use only.")
     return p.parse_args()
 
 
@@ -382,7 +415,7 @@ def main():
     CKPT_DIR = _make_ckpt_dir(SCRIPTS)
 
     print("=" * 60)
-    print(" Colab Training Setup")
+    print(" Remote Training Setup")
     print(f"  Scripts  : {SCRIPTS}")
     print(f"  Epochs   : {EPOCHS}  (freeze={FREEZE_EPOCHS})")
     print(f"  Backbone : {BACKBONE}")
@@ -390,7 +423,7 @@ def main():
     print("=" * 60)
 
     if args.zip_dataset:
-        zip_dataset(output_path=args.zip_output, scripts=SCRIPTS)
+        zip_dataset(output_path=args.zip_output, scripts=args.scripts)
         return
 
     mount_drive()
@@ -408,7 +441,7 @@ def main():
         print("\n[setup] Setup complete. Run with --resume (or without) to start training.")
         return
 
-    train(resume=args.resume, smoke_test=args.smoke_test)
+    train(resume=args.resume, smoke_test=args.smoke_test, sync_to=args.sync_to)
 
 
 if __name__ == "__main__":
