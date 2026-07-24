@@ -103,7 +103,7 @@ def _run(cmd: str, cwd: str = None, check: bool = True):
 
 
 def _in_colab() -> bool:
-    if os.path.isdir("/kaggle/input"):
+    if os.environ.get("KAGGLE_KERNEL_RUN_TYPE"):
         return False
     try:
         import google.colab  # noqa: F401
