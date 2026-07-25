@@ -15,9 +15,22 @@ from PIL import Image
 
 
 def _column_projection(gray: np.ndarray) -> np.ndarray:
-    """Ink density per column: high where characters are, low in gaps."""
-    inv = 255 - gray.astype(np.float32)  # invert so ink = high value
-    return inv.sum(axis=0)
+    """
+    Binary ink-density per column: counts foreground (text) pixels per column.
+    High where characters are, zero in gaps.
+
+    Works for both light-on-dark (Discord dark mode) and dark-on-light images.
+    Background polarity is detected from the image median; a percentile-derived
+    threshold separates ink from background without assuming a fixed inversion.
+    """
+    p10, p50, p90 = np.percentile(gray, [10, 50, 90])
+    if p50 < 128:  # dark background, light text
+        thr = (p50 + p90) / 2
+        ink = gray > thr
+    else:  # light background, dark ink
+        thr = (p10 + p50) / 2
+        ink = gray < thr
+    return ink.astype(np.float32).sum(axis=0)
 
 
 def _smooth(proj: np.ndarray, sigma: float = 0.0) -> np.ndarray:

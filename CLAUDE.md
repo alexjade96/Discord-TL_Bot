@@ -447,15 +447,37 @@ Exploratory work; production pipelines are in the `.py` modules above:
 
 `Typography/Typography_Model.ipynb` — PyTorch font classification model.
 
+### User Recognition (`UserRecognition/`)
+
+Authorship attribution — given a chat message, rank which server members most likely sent it. Backs the `/collect` and `/identify` bot commands. Follows the same production/research split as the other features: shipped code here, model research in `Models/UserRecognition/`.
+
+```
+UserRecognition/
+  identify.py                   ← inference API (public) + CLI
+  tests/                        ← test_identify.py, test_collect_history.py (mocked)
+  0-Data/
+    training/
+      collect_history.py        ← Discord message storage layer
+      dataset.py                ← build (text, label) train/val splits
+      train.py                  ← TF-IDF + Logistic Regression classifier
+      deploy.py                 ← dataset → train → install to ~/.tl-bot/authorship/
+    testing/demo.py             ← end-to-end pipeline demo (no bot required)
+    data/{guild_id}/            ← messages.jsonl, users.jsonl, channels.jsonl, identity.jsonl,
+                                   label_map.json, train.jsonl, val.jsonl (gitignored)
+```
+
+Model artifacts install to `~/.tl-bot/authorship/{guild_id}/`; `identify.py` loads them at first call and caches at module level. See `UserRecognition/readme.md` for the full workflow.
+
 ### Models (`Models/`)
 
-Research and training infrastructure for OCR and font classification. Separate from the production `Translation/` pipeline — nothing here is imported by `TL-Bot.py`.
+Research and training infrastructure for OCR, font classification, and authorship. Separate from the production pipelines — nothing here is imported by `TL-Bot.py`.
 
 ```
 Models/
   Datasets/
     render_chars.py        ← generates char-dataset (run from Models/Datasets/)
     get_fonts.py           ← scans Windows fonts → font-dataset/ (font classifier)
+    build_chat.py          ← generates chat-dataset from collected Discord history
     sample_tilegrid*.py    ← visual sanity checks for grid augments
     char-dataset/
       latin/    ← 62 classes, 77,799 images
@@ -463,6 +485,8 @@ Models/
       hangul/   ← 500 classes, 6,000 images
       cjk/      ← 1,312 viable / 3,000 total classes, 10,506 images
     font-dataset/          ← 21,676 images (get_fonts.py output)
+    chat-dataset/
+      {guild_id}/          ← train/val/test.jsonl, label_map.json, meta.json
   OCR/
     grid_augments.py       ← 6 TileGrid3x3 transforms + RandomGridAugment
     ocr_pipeline.py        ← CRAFT detection + script-routed recognition (public API)
@@ -488,7 +512,18 @@ Models/
     font_classifier/            ← font style classifier package (mirrors char_classifier structure)
     Font_Classifier.ipynb
     train_2epoch.log            ← baseline CPU run result (2 epochs, head warm-up only)
+  UserRecognition/
+    README.md                   ← scope, workflow, data requirements
+    author_classifier/          ← transformer authorship model (mirrors char_classifier)
+      data.py / model_builder.py / engine.py / model_utils.py / utils.py / stats.py
+      train.py                  ← two-phase training CLI, checkpoints/<guild_id>/
+      predict.py                ← single-text inference CLI
+      deploy.py                 ← install to ~/.tl-bot/authorship/<guild_id>/
+    checkpoints/<guild_id>/     ← best.pt, config.json, class_names.json, progress.json
+    tests/                      ← test_build_chat.py, test_author_classifier.py (mocked)
 ```
+
+Production feature code never lives under `Models/`. Each `Models/<Area>/` is the research counterpart to a shipped feature: `Models/OCR` → `Translation/2-Image`, `Models/Typography` → `Typography/`, `Models/UserRecognition` → `UserRecognition/`.
 
 #### char-dataset notes
 
@@ -600,8 +635,9 @@ Always run scripts with `.venv\Scripts\python.exe` — the system Python lacks `
 - **Intents**: `message_content` intent is enabled — must also be enabled in the Discord Developer Portal.
 - **Secrets**: `DISCORD_BOT_TOKEN` and `HF_TOKEN` must never be hardcoded; load from `.env` (gitignored).
 - **No git co-author tags**: Do not add `Co-Authored-By: Claude` lines to commits in this repo.
-- **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Video/data/`, `Translation/0-Data/Synthesized/Audio/data/`, `Translation/0-Data/Synthesized/Image/data/`, `Translation/0-Data/Synthesized/Text/data/`, `Translation/0-Data/Synthesized/Video/data/`, `Translation/0-Data/Image/training/checkpoints/`, `Models/Datasets/char-dataset/`, `Models/Datasets/font-dataset/`, `Models/Datasets/windows-fonts/`, `Models/OCR/checkpoints/`, `Models/Typography/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, model checkpoints, or generated datasets.
-- **Test suite**: `pytest` tests exist under `Translation/1-Text/tests/`, `Translation/2-Image/tests/`, `Translation/3-Audio/tests/`, and `Translation/4-Video/tests/`. Run with `pytest` from the repo root. All four suites use mocks — no network calls required. (84 tests pass, 1 skips if `test_image.png` is absent.)
+- **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Video/data/`, `Translation/0-Data/Synthesized/Audio/data/`, `Translation/0-Data/Synthesized/Image/data/`, `Translation/0-Data/Synthesized/Text/data/`, `Translation/0-Data/Synthesized/Video/data/`, `Translation/0-Data/Image/training/checkpoints/`, `UserRecognition/0-Data/data/`, `Models/Datasets/char-dataset/`, `Models/Datasets/font-dataset/`, `Models/Datasets/windows-fonts/`, `Models/Datasets/chat-dataset/`, `Models/OCR/checkpoints/`, `Models/Typography/checkpoints/`, `Models/UserRecognition/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, model checkpoints, or generated datasets.
+- **Test suite**: `pytest` tests exist under `Translation/1-Text/tests/`, `Translation/2-Image/tests/`, `Translation/3-Audio/tests/`, `Translation/4-Video/tests/`, `Prompt/tests/`, and `UserRecognition/tests/` — registered in `pytest.ini` under `testpaths`. Run with `pytest` from the repo root. All suites use mocks — no network calls required. (229 tests collected; integration tests are marked `integration` and skip without `HF_TOKEN`.) `Models/OCR/` and `Models/Typography/` have no test coverage.
+- **Feature package layout**: every production feature follows the same shape — inference modules at the package root, `tests/` beside them, and a `0-Data/` arm holding `training/` (`collect_*.py`, `dataset.py`, `train.py`, `deploy.py`), `testing/demo.py`, and `data/`. `Translation/`, `UserRecognition/` follow it; `Prompt/` currently has inference + tests only, with no `0-Data/` collection arm.
 - **Preprocessing variants**: All six variants are available in `ocr.py`; `preprocess()` (baseline) is the production default. Use `compare_preprocess.py` to evaluate before switching. `light_denoise` is the most consistent alternative.
 - **Public API surface**: `translate_text()` in `translate_text.py` is the public entry point; `_translate_to_english()` and `_translate_from_english()` are private implementation details.
 - **Collection is non-fatal**: `collect_image.save_submission()`, `collect_text.save_submission()`, and `collect_audio.save_submission()` are all wrapped in try/except — a collection failure must never prevent the translation response from being sent.

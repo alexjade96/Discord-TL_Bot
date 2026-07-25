@@ -2,10 +2,11 @@
 # Discord bot for handling image/text translations
 
 import asyncio
+import datetime
 import io
 import os
+import re
 import sys
-import datetime
 from pathlib import Path
 
 import aiohttp
@@ -51,6 +52,14 @@ from collect_synthesized import save_synthesis as save_synthesis_output  # noqa:
 sys.path.insert(0, str(Path(__file__).parent / "Prompt"))
 from prompt import ask as prompt_ask  # noqa: E402
 
+# User recognition / chat history collection
+sys.path.insert(0, str(Path(__file__).parent / "UserRecognition" / "0-Data" / "training"))
+import collect_history as _collect_history  # noqa: E402
+
+# Authorship attribution inference
+sys.path.insert(0, str(Path(__file__).parent / "UserRecognition"))
+import identify as _identify  # noqa: E402
+
 # Logging rotation settings
 _LOG_MAX_BYTES    = 32 * 1024 * 1024   # 32 MiB per log file
 _LOG_BACKUP_COUNT = 5                  # number of rotated files to retain
@@ -83,6 +92,7 @@ logger.addHandler(handler)
 # Intents
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # required for guild.chunk() to return full member list
 
 client = discord.Client(intents=intents)
 
@@ -220,6 +230,88 @@ def _parse_translate_flags(cmd: str) -> tuple[str, str | None, str | None, bool,
             remaining.append(tokens[i])
             i += 1
     return " ".join(remaining), from_lang, to_lang, analyze, synthesize, errors
+
+
+_COLLECT_MENTION_RE = re.compile(r'<@!?(\d+)>')
+_COLLECT_CHANNEL_RE = re.compile(r'<#(\d+)>')
+
+
+def _parse_collect_flags(cmd: str, guild) -> tuple:
+    """Parse /collect arguments.
+
+    Returns (targets, channel, since, limit, errors).
+    targets is a list of int user IDs and/or str names (one per space-separated token),
+    or ["__BATCH__"] when --batch is given.
+    channel is a discord.TextChannel or None (means all channels).
+    since is a datetime.datetime (UTC) or None.
+    limit is an int or None (means no limit).
+
+    Batch mode: --batch reads targets from data/{guild_id}/targets.txt (one username/ID per line).
+    Space-separated: /collect user1 user2 @mention3 collects all three in sequence.
+    """
+    errors: list[str] = []
+    targets: list = []
+    channel = None
+    since: datetime.datetime | None = None
+    limit: int | None = None
+    batch = False
+
+    tokens = cmd.split()
+    remaining: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "--batch":
+            batch = True
+        elif tok == "--channel" and i + 1 < len(tokens):
+            i += 1
+            val = tokens[i]
+            m = _COLLECT_CHANNEL_RE.match(val)
+            cid = int(m.group(1)) if m else (int(val) if val.isdigit() else None)
+            if cid is None:
+                errors.append(f"_Invalid `--channel` value: `{val}`_")
+            elif guild:
+                ch = guild.get_channel(cid)
+                if ch is None:
+                    errors.append(f"_Channel `{cid}` not found in this server._")
+                else:
+                    channel = ch
+        elif tok == "--since" and i + 1 < len(tokens):
+            i += 1
+            try:
+                since = datetime.datetime.strptime(tokens[i], "%Y-%m-%d").replace(
+                    tzinfo=datetime.timezone.utc
+                )
+            except ValueError:
+                errors.append(f"_Invalid `--since` date `{tokens[i]}` — use YYYY-MM-DD._")
+        elif tok == "--limit" and i + 1 < len(tokens):
+            i += 1
+            if tokens[i].isdigit():
+                limit = int(tokens[i])
+            else:
+                errors.append(f"_Invalid `--limit` value: `{tokens[i]}`_")
+        else:
+            remaining.append(tok)
+        i += 1
+
+    if batch:
+        targets = ["__BATCH__"]
+    elif remaining:
+        for tok in remaining:
+            m = _COLLECT_MENTION_RE.match(tok)
+            if m:
+                targets.append(int(m.group(1)))
+            elif tok.isdigit():
+                targets.append(int(tok))
+            else:
+                targets.append(tok)  # plain name — resolved against identity table
+    else:
+        errors.append(
+            "_Usage: `/collect user1 [user2 ...] [--channel #ch] [--since YYYY-MM-DD] [--limit N]`_\n"
+            "_Or `/collect --batch` to collect all users listed in `targets.txt` for this guild._"
+        )
+
+    return targets, channel, since, limit, errors
 
 
 def _is_same_language(from_lang: str | None, to_lang: str | None) -> bool:
@@ -1123,6 +1215,290 @@ async def _handle_history(channel: discord.abc.Messageable, author_id: int) -> N
     await channel.send(output)
 
 
+async def _scan_members(guild: discord.Guild, guild_id: str) -> int:
+    """Index all guild members into identity.jsonl and update guilds.jsonl. Returns member count."""
+    if not guild.chunked:
+        await guild.chunk()  # request full member list if not yet received
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    records = [
+        {
+            "user_id":      str(m.id),
+            "guild_id":     guild_id,
+            "username":     m.name,
+            "display_name": m.display_name,
+            "bot":          m.bot,
+            "indexed_at":   now_iso,
+        }
+        for m in guild.members
+    ]
+    _collect_history.save_guild(guild_id, guild.name, now_iso)
+    _collect_history.save_identity(records, guild_id)
+    return len(records)
+
+
+async def _scan_user_channels(
+    guild: discord.Guild,
+    guild_id: str,
+    target_id: int,
+    channels: list,
+    since,
+    limit,
+    seen_ids: set,
+    status: discord.Message,
+    label: str = "",
+) -> tuple:
+    """Scan channels for messages from target_id. Returns (msg_found, msg_new, skipped, first_ts, last_ts)."""
+    total_ch  = len(channels)
+    msg_found = 0
+    msg_new   = 0
+    skipped   = []
+    first_ts: str | None = None
+    last_ts:  str | None = None
+
+    for idx, ch in enumerate(channels, 1):
+        if idx % 5 == 0 or idx == total_ch:
+            prefix = f"[{label}] " if label else ""
+            await status.edit(content=f"_{prefix}Scanning channel {idx}/{total_ch}..._")
+
+        await asyncio.sleep(0)
+
+        perms = ch.permissions_for(guild.me)
+        if not perms.read_messages or not perms.read_message_history:
+            skipped.append(ch.name)
+            _collect_history.save_channel({
+                "channel_id": str(ch.id), "guild_id": guild_id,
+                "channel_name": ch.name, "channel_type": str(ch.type),
+                "included": False, "skip_reason": "no_permission",
+                "message_count_collected": 0,
+            }, guild_id)
+            continue
+
+        ch_count = 0
+        retry_after = 1.0
+        while True:
+            try:
+                after = discord.Object(id=discord.utils.time_snowflake(since)) if since else None
+                async for msg in ch.history(limit=limit, after=after, oldest_first=True):
+                    if msg.author.id != target_id:
+                        continue
+
+                    reply_author_id   = None
+                    reply_author_name = None
+                    if (
+                        msg.reference
+                        and isinstance(getattr(msg.reference, "resolved", None), discord.Message)
+                    ):
+                        reply_author_id   = str(msg.reference.resolved.author.id)
+                        reply_author_name = msg.reference.resolved.author.name
+
+                    ts = msg.created_at.isoformat()
+                    if first_ts is None or ts < first_ts:
+                        first_ts = ts
+                    if last_ts is None or ts > last_ts:
+                        last_ts = ts
+
+                    record = {
+                        "message_id":           str(msg.id),
+                        "guild_id":             guild_id,
+                        "channel_id":           str(ch.id),
+                        "channel_name":         ch.name,
+                        "author_id":            str(msg.author.id),
+                        "author_name":          msg.author.name,
+                        "content_raw":          msg.content,
+                        "content_normalized":   _collect_history.normalize_content(msg.content),
+                        "timestamp":            ts,
+                        "edited_timestamp":     msg.edited_at.isoformat() if msg.edited_at else None,
+                        "is_reply":             msg.reference is not None,
+                        "reply_to_author_id":   reply_author_id,
+                        "reply_to_author_name": reply_author_name,
+                        "has_attachments":      bool(msg.attachments),
+                        "has_embeds":           bool(msg.embeds),
+                        "token_count":          len(msg.content.split()),
+                    }
+                    if _collect_history.save_message(record, guild_id, seen_ids):
+                        msg_new += 1
+                    msg_found += 1
+                    ch_count  += 1
+                break
+
+            except discord.Forbidden:
+                skipped.append(ch.name)
+                _collect_history.save_channel({
+                    "channel_id": str(ch.id), "guild_id": guild_id,
+                    "channel_name": ch.name, "channel_type": str(ch.type),
+                    "included": False, "skip_reason": "no_permission",
+                    "message_count_collected": 0,
+                }, guild_id)
+                break
+
+            except discord.HTTPException as exc:
+                if exc.status == 429:
+                    wait = float(exc.response.headers.get("Retry-After", retry_after))
+                    logger.warning("Rate limited on #%s — waiting %.1fs", ch.name, wait)
+                    await status.edit(content=f"_Rate limited — waiting {wait:.0f}s..._")
+                    await asyncio.sleep(wait)
+                    retry_after = min(retry_after * 2, 60.0)
+                else:
+                    logger.warning("HTTPException on #%s: %s", ch.name, exc)
+                    skipped.append(ch.name)
+                    break
+
+        _collect_history.save_channel({
+            "channel_id": str(ch.id), "guild_id": guild_id,
+            "channel_name": ch.name, "channel_type": str(ch.type),
+            "included": ch.name not in skipped, "skip_reason": None,
+            "message_count_collected": ch_count,
+        }, guild_id)
+
+    return msg_found, msg_new, skipped, first_ts, last_ts
+
+
+async def _resolve_collect_target(target_raw, guild: discord.Guild, identity: dict, member_count: int):
+    """Resolve a collect target (int ID, str name, or @mention str) to a discord.Member, or return None."""
+    if isinstance(target_raw, int):
+        target_id = target_raw
+    else:
+        m = _COLLECT_MENTION_RE.match(target_raw)
+        if m:
+            target_id = int(m.group(1))
+        elif target_raw.isdigit():
+            target_id = int(target_raw)
+        else:
+            match = identity["by_name"].get(target_raw.lower())
+            if match is None:
+                return None, f"_No member found with name `{target_raw}` ({member_count} indexed)._"
+            target_id = int(match["user_id"])
+
+    member = guild.get_member(target_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(target_id)
+        except discord.NotFound:
+            return None, f"_User ID `{target_id}` not found in this server._"
+    return member, None
+
+
+async def _handle_collect(cmd: str, message: discord.Message) -> None:
+    """Collect messages for one or more users and save to UserRecognition dataset."""
+    if message.guild is None:
+        await message.channel.send("_`/collect` only works inside a server._")
+        return
+
+    targets, channel_filter, since, limit, errors = _parse_collect_flags(cmd, message.guild)
+    for err in errors:
+        await message.channel.send(err)
+    if errors or not targets:
+        return
+
+    guild_id = str(message.guild.id)
+    invoker  = message.author
+    has_perm = (
+        invoker.guild_permissions.manage_messages
+        or invoker.guild_permissions.administrator
+    )
+
+    # ── Expand --batch into target list from targets.txt ─────────────────────
+    if targets == ["__BATCH__"]:
+        if not has_perm:
+            await message.channel.send("_`--batch` requires **Manage Messages** permission._")
+            return
+        targets_file = _collect_history._DATA_ROOT / guild_id / "targets.txt"
+        if not targets_file.exists():
+            await message.channel.send(
+                f"_No `targets.txt` found for this guild.\n"
+                f"Create `Models/UserRecognition/0-Data/data/{guild_id}/targets.txt` "
+                "with one username or user ID per line (lines starting with `#` are comments)._"
+            )
+            return
+        raw_lines = targets_file.read_text(encoding="utf-8").splitlines()
+        targets = [ln.strip() for ln in raw_lines if ln.strip() and not ln.startswith("#")]
+        if not targets:
+            await message.channel.send("_`targets.txt` is empty (or all lines are comments)._")
+            return
+
+    # Collecting multiple users always requires Manage Messages.
+    multi = len(targets) > 1
+    if multi and not has_perm:
+        await message.channel.send("_Collecting multiple users requires **Manage Messages** permission._")
+        return
+
+    # ── Index members once, then iterate ─────────────────────────────────────
+    status = await message.channel.send("_Indexing server members..._")
+    member_count = await _scan_members(message.guild, guild_id)
+    identity     = _collect_history.load_identity(guild_id)
+    seen_ids     = _collect_history.load_seen_ids(guild_id)
+    channels     = [channel_filter] if channel_filter else list(message.guild.text_channels)
+    results: list[str] = []
+
+    for i, t_raw in enumerate(targets, 1):
+        if multi:
+            await status.edit(content=f"_Collecting {i}/{len(targets)}: {t_raw}..._")
+
+        target, err = await _resolve_collect_target(t_raw, message.guild, identity, member_count)
+        if err:
+            results.append(f"❌ `{t_raw}` — {err.strip('_')}")
+            continue
+
+        # Single-user: allow self-collection without Manage Messages.
+        if not multi and not has_perm and invoker.id != target.id:
+            await message.channel.send(
+                "_You need **Manage Messages** permission to collect another user's history._"
+            )
+            return
+
+        if not multi:
+            await status.edit(content=f"_Collecting messages from **{target.display_name}**..._")
+
+        msg_found, msg_new, skipped, first_ts, last_ts = await _scan_user_channels(
+            message.guild, guild_id, target.id, channels, since, limit, seen_ids, status,
+            label=target.display_name if multi else "",
+        )
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        _collect_history.save_user({
+            "user_id":           str(target.id),
+            "guild_id":          guild_id,
+            "username":          target.name,
+            "display_name":      target.display_name,
+            "message_count":     msg_found,
+            "first_message_at":  first_ts or now_iso,
+            "last_message_at":   last_ts  or now_iso,
+            "last_collected_at": now_iso,
+        }, guild_id)
+        skip_note = f" ({len(skipped)} skipped)" if skipped else ""
+        results.append(f"✅ **{target.display_name}** — {msg_new} new / {msg_found} found{skip_note}")
+
+    header = "**Collection complete:**" if multi else f"**Collected: {targets[0]}**"
+    await status.edit(content=header + "\n" + "\n".join(results))
+
+
+async def _handle_identify(text: str, message: discord.Message) -> None:
+    """Rank likely authors of text using the guild's trained authorship model."""
+    if message.guild is None:
+        await message.channel.send("_`/identify` only works inside a server._")
+        return
+
+    guild_id = str(message.guild.id)
+    if not _identify.model_exists(guild_id):
+        await message.channel.send(
+            "_No trained model found for this server. "
+            "Collect message history with `/collect`, then run `train.py --guild " + guild_id + "` to train._"
+        )
+        return
+
+    try:
+        results = _identify.identify(text, guild_id)
+    except Exception as exc:
+        logger.error("identify error: %s", exc)
+        await message.channel.send("_Error running authorship model — check logs._")
+        return
+
+    lines = [f"**Likely authors of:** _{text[:120]}{'…' if len(text) > 120 else ''}_"]
+    for rank, r in enumerate(results, 1):
+        bar = "█" * int(r["score"] * 10) + "░" * (10 - int(r["score"] * 10))
+        lines.append(f"`{rank}.` **{r['username']}** {bar} {r['score']*100:.1f}%")
+    await message.channel.send("\n".join(lines))
+
+
 # Bot events
 @client.event
 async def on_ready():
@@ -1164,7 +1540,10 @@ async def on_message(message):
             "/test <language> — Run a self-test with a built-in sample text and return all synthesis outputs\n"
             "      Supported: english, chinese, japanese, korean, french\n"
             "/prompt <message> — Ask the bot a question (conversation history is maintained per user)\n"
-            "/history — Show your conversation history"
+            "/history — Show your conversation history\n"
+            "/collect @user [--channel #ch] [--since YYYY-MM-DD] [--limit N] — Save a user's message history\n"
+            "/collect --batch — Collect all users listed in data/{guild_id}/targets.txt\n"
+            "/identify <text> — Rank likely authors of a message using the trained authorship model"
         )
         return
 
@@ -1202,6 +1581,18 @@ async def on_message(message):
 
     if msg.startswith("/history"):
         await _handle_history(message.channel, message.author.id)
+        return
+
+    if msg.startswith("/collect"):
+        await _handle_collect(msg[len("/collect"):].strip(), message)
+        return
+
+    if msg.startswith("/identify"):
+        text = msg[len("/identify"):].strip()
+        if not text:
+            await message.channel.send("_Usage: `/identify <text>` — rank likely authors of a message._")
+        else:
+            await _handle_identify(text, message)
         return
 
     await message.channel.send("Unrecognized command. Type `/help` for a list of available commands.")

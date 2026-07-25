@@ -160,6 +160,7 @@ venv.bak/
 # Data directory
 data/
 logs/
+UserRecognition/0-Data/data/
 Datasets/
 font-dataset/
 windows-fonts/
@@ -244,3 +245,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Authorship model research checkpoints
+Models/UserRecognition/checkpoints/
+
+# Derived chat corpus (rebuild with Models/Datasets/build_chat.py)
+Models/Datasets/chat-dataset/

@@ -47,9 +47,11 @@ def parse_args():
     p.add_argument('--backbone',         default='dinov2_vits14',
                    choices=['dinov2_vits14', 'dinov2_vitb14', 'convnext_tiny'],
                    help='dinov2_vitb14 is higher-capacity but needs a GPU (86M params)')
-    p.add_argument('--epochs',           type=int,   default=30)
-    p.add_argument('--freeze-epochs',    type=int,   default=5,
-                   help='Head-only warm-up epochs before fine-tuning backbone')
+    p.add_argument('--epochs',           type=int,   default=48,
+                   help='Total epochs including freeze warm-up (default 48; Latin best at 42)')
+    p.add_argument('--freeze-epochs',    type=int,   default=3,
+                   help='Head-only warm-up epochs before fine-tuning backbone '
+                        '(default 3; phase 1 contributes <16%% val acc regardless of length)')
     p.add_argument('--unfreeze-blocks',  type=int,   default=4,
                    help='Backbone blocks/stages to unfreeze in phase 2')
     p.add_argument('--batch-size',       type=int,   default=32)
@@ -61,8 +63,14 @@ def parse_args():
                    choices=['single', 'rotated', 'all'],
                    help='single=TileGrid3x3 only | rotated=+full-grid rotation | '
                         'all=random choice among all 6 variants per sample')
-    p.add_argument('--mixup-alpha',      type=float, default=0.4,
-                   help='MixUp alpha (Beta distribution param). 0 = disabled')
+    p.add_argument('--mixup-alpha',      type=float, default=0.2,
+                   help='MixUp alpha (Beta distribution param). 0 = disabled '
+                        '(default 0.2; 0.4 created a 10-15pt train/val gap with no accuracy gain)')
+    p.add_argument('--scheduler',        default='cosine',
+                   choices=['cosine', 'cosine-warm', 'none'],
+                   help='Phase-2 LR scheduler. cosine=CosineAnnealingLR (original); '
+                        'cosine-warm=CosineAnnealingWarmRestarts(T_0=15,T_mult=2) — '
+                        'preferred for small datasets (kana/hangul/cjk); none=constant LR')
     p.add_argument('--clip-grad',        type=float, default=1.0,
                    help='Max gradient norm for clipping. 0 = disabled')
     p.add_argument('--max-per-class',   type=int,   default=0,
@@ -120,7 +128,9 @@ def main():
 
     # Write config so compare.py knows which backbone to load for this script set
     json.dump(
-        {'backbone': args.backbone, 'scripts': list(scripts), 'epochs': args.epochs},
+        {'backbone': args.backbone, 'scripts': list(scripts), 'epochs': args.epochs,
+         'freeze_epochs': args.freeze_epochs, 'scheduler': args.scheduler,
+         'mixup_alpha': args.mixup_alpha},
         open(ckpt_dir / 'config.json', 'w'), indent=2,
     )
 
@@ -312,13 +322,21 @@ def main():
                 optimizer = _make_p2_optimizer(model, args.lr)
                 current_optimizer[0] = optimizer
 
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=fine_epochs
-            )
+            if args.scheduler == 'cosine-warm':
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer, T_0=15, T_mult=2
+                )
+            elif args.scheduler == 'none':
+                scheduler = None
+            else:
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=fine_epochs
+                )
             # Fast-forward scheduler to match elapsed phase-2 epochs
             p2_elapsed = max(start_epoch - freeze_epochs, 0) if resume_into_p2 else 0
-            for _ in range(p2_elapsed):
-                scheduler.step()
+            if scheduler is not None:
+                for _ in range(p2_elapsed):
+                    scheduler.step()
 
             p2_start    = max(start_epoch, freeze_epochs)
             remaining_p2 = args.epochs - p2_start
@@ -326,7 +344,7 @@ def main():
                 print(f'[train] Phase 2 - fine-tuning '
                       f'({remaining_p2} of {fine_epochs} epoch(s) remaining, '
                       f'{args.unfreeze_blocks} blocks)'
-                      f'  mixup={args.mixup_alpha}  clip_grad={args.clip_grad}')
+                      f'  scheduler={args.scheduler}  mixup={args.mixup_alpha}  clip_grad={args.clip_grad}')
                 results = train_loop(
                     model, train_loader, val_loader, loss_fn, optimizer,
                     epochs=remaining_p2, device=device, writer=writer,
@@ -339,7 +357,7 @@ def main():
 
     except KeyboardInterrupt:
         last_pt = ckpt_dir / 'last.pt'
-        print(f'\n[train] Interrupted after epoch {best_val_acc_ref[0]:.4f} best val acc.')
+        print(f'\n[train] Interrupted. Best val acc so far: {best_val_acc_ref[0]:.4f}')
         if last_pt.exists():
             saved_epoch = peek_checkpoint_epoch(str(last_pt))
             print(f'[train] last.pt saved at epoch {saved_epoch}: {last_pt}')
@@ -352,6 +370,8 @@ def main():
             print('[train] No last.pt — no epoch completed before interrupt.')
         if writer:
             writer.close()
+        if all_results['train_loss']:
+            plot_curves(all_results, save_path=str(ckpt_dir / 'curves.png'))
         return
 
     if writer:

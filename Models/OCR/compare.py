@@ -95,6 +95,17 @@ def _get_eval_tf():
     return _eval_tf
 
 
+def _label_to_char(label: str) -> str:
+    """Convert a class label ('cap_A', 'low_z', 'dig_3') to its plain character."""
+    if label.startswith('cap_'):
+        return label[4:].upper()
+    if label.startswith('low_'):
+        return label[4:].lower()
+    if label.startswith('dig_'):
+        return label[4:]
+    return label  # '?' or unknown
+
+
 def _classify_crop(crop: Image.Image, script: str, top_k: int = 3) -> list[tuple[str, float]]:
     """Run classifier on a single char crop. Returns [(label, conf), ...]."""
     import torch
@@ -176,8 +187,9 @@ def compare_image(
             preds     = _classify_crop(cc, region.script, top_k=top_k)
             clf_label = preds[0][0] if preds else '?'
             clf_conf  = preds[0][1] if preds else 0.0
+            clf_char  = _label_to_char(clf_label)
             std_char  = std_str[j] if j < len(std_str) else '?'
-            agrees    = clf_label != '?' and std_char != '?' and clf_label == std_char
+            agrees    = clf_char != '?' and std_char != '?' and clf_char == std_char
             chars.append(CharComparison(
                 crop      = cc,
                 clf_label = clf_label,
@@ -187,7 +199,7 @@ def compare_image(
                 agrees    = agrees,
             ))
 
-        clf_text    = ''.join(c.clf_label for c in chars if c.clf_label != '?')
+        clf_text    = ''.join(_label_to_char(c.clf_label) for c in chars if c.clf_label != '?')
         agree_count = sum(1 for c in chars if c.agrees)
         regions.append(RegionComparison(
             region_idx  = i + 1,

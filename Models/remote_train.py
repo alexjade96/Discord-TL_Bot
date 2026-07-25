@@ -58,7 +58,7 @@ DATASET_ZIP = f"{DRIVE_ROOT}/char-dataset.zip"
 # ============================================================
 
 SCRIPTS       = ["latin"]        # latin | kana | hangul | cjk | all
-EPOCHS        = 30
+EPOCHS        = 48
 
 # CKPT_DIR is derived from SCRIPTS; use _make_ckpt_dir() whenever SCRIPTS may
 # have been overridden by CLI args (see main()).
@@ -81,13 +81,14 @@ def _make_ckpt_dir(scripts: list) -> str:
 
 
 CKPT_DIR = _make_ckpt_dir(SCRIPTS)
-FREEZE_EPOCHS = 5                # head-only warm-up epochs before backbone fine-tune
+FREEZE_EPOCHS   = 3                # head-only warm-up epochs before backbone fine-tune
 UNFREEZE_BLOCKS = 4
-BATCH_SIZE    = 64
-BACKBONE      = "dinov2_vits14"  # dinov2_vits14 | dinov2_vitb14 | convnext_tiny
-GRID_MODE     = "all"            # single | rotated | all
-MIXUP_ALPHA   = 0.4
-CLIP_GRAD     = 1.0
+BATCH_SIZE      = 64
+BACKBONE        = "dinov2_vits14"  # dinov2_vits14 | dinov2_vitb14 | convnext_tiny
+GRID_MODE       = "all"            # single | rotated | all
+MIXUP_ALPHA     = 0.2              # 0.4 caused persistent train<val gap; 0.2 is gentler
+SCHEDULER       = "cosine-warm"    # cosine | cosine-warm | none
+CLIP_GRAD       = 1.0
 
 
 # ============================================================
@@ -297,6 +298,7 @@ def train(resume: bool, smoke_test: bool, sync_to: str = None):
         "--backbone",       BACKBONE,
         "--grid-mode",      GRID_MODE,
         "--mixup-alpha",    str(MIXUP_ALPHA),
+        "--scheduler",      SCHEDULER,
         "--clip-grad",      str(CLIP_GRAD),
         "--checkpoint-dir", CKPT_DIR,
         "--no-tensorboard",
@@ -384,10 +386,17 @@ def parse_args():
                    help="Zip char-dataset for Drive upload (run locally, then exit)")
     p.add_argument("--zip-output",    default=None,
                    help="Output path for --zip-dataset (default: <repo-root>/char-dataset.zip)")
-    p.add_argument("--scripts",       nargs="+", default=None, metavar="SCRIPT",
+    p.add_argument("--scripts",        nargs="+", default=None, metavar="SCRIPT",
                    help="Override SCRIPTS config (e.g. --scripts latin kana)")
-    p.add_argument("--epochs",        type=int, default=None,
+    p.add_argument("--epochs",         type=int, default=None,
                    help="Override EPOCHS config")
+    p.add_argument("--freeze-epochs",  type=int, default=None,
+                   help="Override FREEZE_EPOCHS (head warm-up epochs; default 3)")
+    p.add_argument("--mixup-alpha",    type=float, default=None,
+                   help="Override MIXUP_ALPHA (default 0.2)")
+    p.add_argument("--scheduler",      default=None,
+                   choices=["cosine", "cosine-warm", "none"],
+                   help="Override SCHEDULER (default cosine-warm)")
     p.add_argument("--storage-root",  default=None,
                    help="Override DRIVE_ROOT for checkpoints and dataset zip "
                         "(Lightning AI: /teamspace/studios/this_studio/TL-Bot)")
@@ -405,6 +414,7 @@ def main():
 
     # Apply CLI overrides before anything reads these globals.
     global SCRIPTS, EPOCHS, CKPT_DIR, DRIVE_ROOT, DATASET_ZIP, REPO_DIR
+    global FREEZE_EPOCHS, MIXUP_ALPHA, SCHEDULER
     if args.storage_root is not None:
         DRIVE_ROOT  = args.storage_root
         DATASET_ZIP = f"{DRIVE_ROOT}/char-dataset.zip"
@@ -414,14 +424,21 @@ def main():
         SCRIPTS = args.scripts
     if args.epochs is not None:
         EPOCHS = args.epochs
+    if args.freeze_epochs is not None:
+        FREEZE_EPOCHS = args.freeze_epochs
+    if args.mixup_alpha is not None:
+        MIXUP_ALPHA = args.mixup_alpha
+    if args.scheduler is not None:
+        SCHEDULER = args.scheduler
     CKPT_DIR = _make_ckpt_dir(SCRIPTS)
 
     print("=" * 60)
     print(" Remote Training Setup")
-    print(f"  Scripts  : {SCRIPTS}")
-    print(f"  Epochs   : {EPOCHS}  (freeze={FREEZE_EPOCHS})")
-    print(f"  Backbone : {BACKBONE}")
-    print(f"  Ckpt dir : {CKPT_DIR}")
+    print(f"  Scripts   : {SCRIPTS}")
+    print(f"  Epochs    : {EPOCHS}  (freeze={FREEZE_EPOCHS})")
+    print(f"  Backbone  : {BACKBONE}")
+    print(f"  Scheduler : {SCHEDULER}  mixup={MIXUP_ALPHA}")
+    print(f"  Ckpt dir  : {CKPT_DIR}")
     print("=" * 60)
 
     if args.zip_dataset:
