@@ -1,8 +1,8 @@
-# CLI entry point for authorship classifier training.
+# CLI entry point for user recognition classifier training.
 # Run from Models/UserRecognition/:
-#   python -m author_classifier.train --guild 1502045408677986405
-#   python -m author_classifier.train --guild <ID> --backbone distilbert-base-multilingual-cased
-#   python -m author_classifier.train --guild <ID> --resume checkpoints/<ID>/last.pt --epochs 20
+#   python -m user_classifier.train --guild 1502045408677986405
+#   python -m user_classifier.train --guild <ID> --backbone distilbert-base-multilingual-cased
+#   python -m user_classifier.train --guild <ID> --resume checkpoints/<ID>/last.pt --epochs 20
 import argparse
 import json
 import time
@@ -29,13 +29,13 @@ else:
                                save_checkpoint, set_seed)
 
 
-_HERE          = Path(__file__).parent                                    # author_classifier/
+_HERE          = Path(__file__).parent                                    # user_classifier/
 _DATASET_ROOT  = _HERE.parent.parent / 'Datasets' / 'chat-dataset'
 _DEFAULT_CKPTS = str(_HERE.parent / 'checkpoints')
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description='Authorship Attribution Classifier Training')
+    p = argparse.ArgumentParser(description='User Recognition Classifier Training')
     p.add_argument('--guild', required=True,
                    help='Guild ID — selects chat-dataset/<guild_id>/ and checkpoints/<guild_id>/')
     p.add_argument('--dataset-dir',    default=None,
@@ -61,6 +61,10 @@ def parse_args():
                    choices=['none', 'light', 'heavy'],
                    help='Token-level augmentation. Style-preserving only.')
     p.add_argument('--label-smoothing', type=float, default=0.1)
+    p.add_argument('--select-metric',  default='f1', choices=['f1', 'val_acc'],
+                   help='Metric that decides which epoch becomes best.pt (default f1). '
+                        'Chat corpora are class-imbalanced, so accuracy selects a '
+                        'checkpoint biased toward the majority user.')
     p.add_argument('--scheduler',      default='cosine',
                    choices=['cosine', 'cosine-warm', 'none'])
     p.add_argument('--clip-grad',      type=float, default=1.0,
@@ -177,7 +181,12 @@ def main():
         'grad_norm':  [], 'lr':        [],
     }
 
-    best_val_acc_ref  = [best_val_acc]
+    # Checkpoint selection metric. Defaults to macro-F1 because chat corpora are
+    # heavily class-imbalanced (one user commonly holds >50% of samples), and
+    # selecting on accuracy then picks a checkpoint that predicts the majority
+    # user well and everyone else badly.
+    _sel = args.select_metric
+    best_score_ref    = [best_val_acc]
     current_optimizer = [optimizer]
 
     _progress_path = ckpt_dir / 'progress.json'
@@ -188,8 +197,12 @@ def main():
             for k in all_results:
                 if k in _e:
                     all_results[k].append(_e[k])
-        _best_epoch_ref = [max(_epoch_log, key=lambda e: e.get('val_acc', 0.0)).get('epoch', start_epoch)
-                           if _epoch_log else start_epoch]
+        if _epoch_log:
+            _best = max(_epoch_log, key=lambda e: e.get(_sel, 0.0))
+            _best_epoch_ref = [_best.get('epoch', start_epoch)]
+            best_score_ref  = [_best.get(_sel, best_val_acc)]
+        else:
+            _best_epoch_ref = [start_epoch]
     except Exception:
         _epoch_log = []
         _best_epoch_ref = [start_epoch]
@@ -218,7 +231,8 @@ def main():
             'phase':            _phase,
             'phase_label':      'head warm-up' if _phase == 1 else 'encoder fine-tune',
             'val_acc':          round(float(v_acc), 6),
-            'best_val_acc':     round(float(best_val_acc_ref[0]), 6),
+            'select_metric':    _sel,
+            'best_score':       round(float(best_score_ref[0]), 6),
             'best_epoch':       _best_epoch_ref[0],
             'f1':               _f1,
             'lr':               _lr,
@@ -231,14 +245,16 @@ def main():
         }
         save_checkpoint(model, current_optimizer[0], g, v_acc,
                         ckpt_dir / 'last.pt', class_names, meta=_meta)
-        if v_acc > best_val_acc_ref[0]:
-            best_val_acc_ref[0] = v_acc
-            _best_epoch_ref[0]  = g
-            _meta['best_val_acc'] = round(float(v_acc), 6)
-            _meta['best_epoch']   = g
+        _score = _f1 if _sel == 'f1' else float(v_acc)
+        if _score > best_score_ref[0]:
+            best_score_ref[0]  = _score
+            _best_epoch_ref[0] = g
+            _meta['best_score'] = round(float(_score), 6)
+            _meta['best_epoch'] = g
             save_checkpoint(model, current_optimizer[0], g, v_acc,
                             ckpt_dir / 'best.pt', class_names, meta=_meta)
-            print(f'[train] New best: {v_acc:.4f}  f1 {_f1:.4f} -> saved best.pt')
+            print(f'[train] New best ({_sel}): {_score:.4f}  '
+                  f'[acc {v_acc:.4f}  f1 {_f1:.4f}] -> saved best.pt')
         if metrics:
             _epoch_log.append({
                 'epoch':         g,
@@ -259,7 +275,8 @@ def main():
             'epochs_remaining': _epochs_remaining,
             'phase':            _phase,
             'phase_label':      'head warm-up' if _phase == 1 else 'encoder fine-tune',
-            'best_val_acc':     round(float(best_val_acc_ref[0]), 6),
+            'select_metric':    _sel,
+            'best_score':       round(float(best_score_ref[0]), 6),
             'best_epoch':       _best_epoch_ref[0],
             'last_val_acc':     round(float(v_acc), 6),
             'last_f1':          _f1,
@@ -325,11 +342,12 @@ def main():
 
     except KeyboardInterrupt:
         last_pt = ckpt_dir / 'last.pt'
-        print(f'\n[train] Interrupted. Best val acc so far: {best_val_acc_ref[0]:.4f}')
+        print(f'\n[train] Interrupted. Best {_sel} so far: {best_score_ref[0]:.4f} '
+              f'(epoch {_best_epoch_ref[0]})')
         if last_pt.exists():
             print(f'[train] last.pt saved at epoch {peek_checkpoint_epoch(str(last_pt))}: {last_pt}')
             print(f'[train] Resume with:')
-            print(f'  python -m author_classifier.train --guild {args.guild} '
+            print(f'  python -m user_classifier.train --guild {args.guild} '
                   f'--epochs {args.epochs} --resume {last_pt}')
         else:
             print('[train] No last.pt - no epoch completed before interrupt.')
@@ -342,8 +360,18 @@ def main():
     if writer:
         writer.close()
 
-    print(f'[train] Best val acc: {best_val_acc_ref[0]:.4f}')
-    print('[train] Evaluating on test set ...')
+    print(f'[train] Best {_sel}: {best_score_ref[0]:.4f} (epoch {_best_epoch_ref[0]})')
+
+    # Evaluate the checkpoint that deploy.py will actually install, not the
+    # live final-epoch model. They are different whenever the best epoch is not
+    # the last one, and reporting the final model's score would describe a
+    # model that is never saved.
+    best_pt = ckpt_dir / 'best.pt'
+    if best_pt.exists():
+        load_checkpoint(best_pt, model, device=device)
+        print(f'[train] Evaluating best.pt (epoch {_best_epoch_ref[0]}) on test set ...')
+    else:
+        print('[train] No best.pt — evaluating the final-epoch model on test set ...')
     print_report(model, test_loader, class_names, device)
     plot_curves(all_results, save_path=str(ckpt_dir / 'curves.png'))
 

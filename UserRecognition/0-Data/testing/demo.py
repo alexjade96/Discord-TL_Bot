@@ -1,4 +1,4 @@
-"""End-to-end demo for the UserRecognition authorship attribution pipeline.
+"""End-to-end demo for the UserRecognition user recognition pipeline.
 
 Loads collected message data, builds train/val splits, trains the classifier,
 and runs identify() on sample texts — verifying the full pipeline without the bot.
@@ -86,10 +86,13 @@ def main() -> None:
         if args.top:
             results = results[: args.top]
         top = results[0]
-        bar = "█" * int(top["score"] * 20) + "░" * (20 - int(top["score"] * 20))
+        # ASCII bar/arrow: the Windows console defaults to cp1252, which cannot
+        # encode block-drawing characters or arrows.
+        filled = int(top["score"] * 20)
+        bar = "#" * filled + "." * (20 - filled)
         others = "  ".join(f"{r['username']}={r['score']*100:.0f}%" for r in results[1:])
         print(f"  {text!r}")
-        print(f"    → {top['username']:<20} {bar}  {top['score']*100:.1f}%  [{others}]")
+        print(f"    -> {top['username']:<20} {bar}  {top['score']*100:.1f}%  [{others}]")
 
     print("\nDemo complete.")
 

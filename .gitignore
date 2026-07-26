@@ -245,7 +245,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-# Authorship model research checkpoints
+# User recognition model research checkpoints
 Models/UserRecognition/checkpoints/
 
 # Derived chat corpus (rebuild with Models/Datasets/build_chat.py)

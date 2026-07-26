@@ -1,4 +1,4 @@
-"""Dataset and dataloader construction for authorship attribution.
+"""Dataset and dataloader construction for user recognition.
 
 Reads the splits written by Models/Datasets/build_chat.py.  Unlike the image
 pipeline, splitting happens at dataset-build time (chronologically, per author),
@@ -17,7 +17,7 @@ _SPLITS = ('train', 'val', 'test')
 
 
 # -- text augmentation --------------------------------------------------------
-# Deliberately conservative: authorship signal lives in function words,
+# Deliberately conservative: user-recognition signal lives in function words,
 # punctuation and casing, so any augment that normalises those destroys the
 # label.  Token dropout is safe (it thins content without changing style);
 # synonym replacement and back-translation are not, and are omitted.

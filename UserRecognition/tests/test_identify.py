@@ -54,7 +54,7 @@ def _write_neural(root, guild="999"):
 
 class TestModelExists:
     def test_returns_false_when_no_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(identify, "_MODEL_ROOT", tmp_path / "authorship")
+        monkeypatch.setattr(identify, "_MODEL_ROOT", tmp_path / "user recognition")
         assert identify.model_exists("999") is False
 
     def test_returns_false_when_files_missing(self, tmp_path, monkeypatch):
@@ -85,7 +85,7 @@ class TestModelExists:
 
 class TestLoad:
     def test_raises_when_no_model(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(identify, "_MODEL_ROOT", tmp_path / "authorship")
+        monkeypatch.setattr(identify, "_MODEL_ROOT", tmp_path / "user recognition")
         monkeypatch.setitem(identify._cache, "missing", None)
         identify._cache.pop("missing", None)
         with pytest.raises(FileNotFoundError):
@@ -182,7 +182,7 @@ class TestIdentify:
         char_vec.transform.assert_called_once_with(["test input"])
 
     def test_raises_when_no_model(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(identify, "_MODEL_ROOT", tmp_path / "authorship")
+        monkeypatch.setattr(identify, "_MODEL_ROOT", tmp_path / "user recognition")
         monkeypatch.setitem(identify._cache, "no_model", None)
         identify._cache.pop("no_model", None)
         with pytest.raises(FileNotFoundError):

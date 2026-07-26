@@ -24,6 +24,8 @@ Logs are written to `./logs/TL_Bot_<date>.log` (rotating, 32 MiB max, 5 backups)
 
 The bot token **must not be hardcoded** in `TL-Bot.py`. It is loaded via `python-dotenv` from `DISCORD_BOT_TOKEN` in `.env` or the environment. Raising `RuntimeError` on startup if unset is intentional.
 
+**`client.run()` must stay inside `if __name__ == "__main__":`.** Without the guard, *importing* `TL-Bot.py` — from a test, a REPL, or a tooling check — connects a second live bot that races the real one: both answer every command, and both append to the same collection files, where the per-process in-memory `seen_ids` dedup cannot see the other's writes. This happened once and left a stray bot connected for five hours. `tests/test_bot_commands.py` asserts the guard is present.
+
 ## Bot Commands
 
 The bot only responds when `@TL-Bot` is the first token. Command routing:
@@ -37,6 +39,9 @@ The bot only responds when `@TL-Bot` is the first token. Command routing:
 - `/translate [flags]` + video attachment → extract audio, transcribe (Whisper), then translate
 - `/test [language]` → translate a built-in sample script and return all three synthesis outputs (`.txt`, `.mp3`, `.png`)
 - `/prompt <text>` → conversational LLM chat (multi-turn, per-channel history); sends `_Thinking..._` immediately then edits with reply
+- `/index [flags]` → sweep channels and record every user who has posted; stores no messages (Manage Messages required)
+- `/collect <user|@mention|id> [flags]` → save a user's message history; `--batch` reads `targets.txt`
+- `/identify <text>` → rank likely senders of a message
 - Unrecognized command → fallback message
 
 Flags parsed by `_parse_translate_flags()` in `TL-Bot.py` (called once per `/translate` command, shared by attachment and inline paths):
@@ -449,7 +454,7 @@ Exploratory work; production pipelines are in the `.py` modules above:
 
 ### User Recognition (`UserRecognition/`)
 
-Authorship attribution — given a chat message, rank which server members most likely sent it. Backs the `/collect` and `/identify` bot commands. Follows the same production/research split as the other features: shipped code here, model research in `Models/UserRecognition/`.
+User recognition — given a chat message, rank which server members most likely sent it. Backs the `/collect` and `/identify` bot commands. Follows the same production/research split as the other features: shipped code here, model research in `Models/UserRecognition/`.
 
 ```
 UserRecognition/
@@ -460,17 +465,30 @@ UserRecognition/
       collect_history.py        ← Discord message storage layer
       dataset.py                ← build (text, label) train/val splits
       train.py                  ← TF-IDF + Logistic Regression classifier
-      deploy.py                 ← dataset → train → install to ~/.tl-bot/authorship/
+      deploy.py                 ← dataset → train → install to ~/.tl-bot/user-recognition/
     testing/demo.py             ← end-to-end pipeline demo (no bot required)
-    data/{guild_id}/            ← messages.jsonl, users.jsonl, channels.jsonl, identity.jsonl,
-                                   label_map.json, train.jsonl, val.jsonl (gitignored)
+    data/{guild_id}/
+      users/{user_id}.jsonl     ← that user's messages — one file per user
+      users.jsonl               ← index: user_id → username, stats, in_guild
+      channels.jsonl, identity.jsonl, authors.jsonl,
+      label_map.json, train.jsonl, val.jsonl          (all gitignored)
 ```
 
-Model artifacts install to `~/.tl-bot/authorship/{guild_id}/`; `identify.py` loads them at first call and caches at module level. See `UserRecognition/readme.md` for the full workflow.
+**Per-user message storage**: messages are stored one file per user, not in a single mixed `messages.jsonl`. Each `users/{user_id}.jsonl` is already a clean per-class corpus, so counting a user's samples, holding one out, or dropping a user from training is a file operation rather than a filter over the whole guild. Filenames use the immutable `user_id`; `users.jsonl` maps it to a username so a rename never orphans a file. `collect_history.py` exposes `list_user_ids()`, `load_user_messages()`, `messages_by_user()`, `user_message_counts()` for per-class work and `load_messages()` for the flat view. `collect_history.py --migrate` splits a legacy `messages.jsonl` (idempotent; renames it to `.migrated`), and both `dataset.py` and `build_chat.py` fall back to reading a legacy file when no `users/` directory exists.
+
+Model artifacts install to `~/.tl-bot/user-recognition/{guild_id}/`; `identify.py` loads them at first call and caches at module level. See `UserRecognition/readme.md` for the full workflow.
+
+**`identity.jsonl` vs `authors.jsonl`**: identity is a snapshot of *current* members, overwritten by `_scan_members` on every run. `authors.jsonl` accumulates every author ever seen in channel history and is never pruned — it is what makes a user who has left the server resolvable by name. It is populated as a side effect of any scan, since the loop already visits every message.
+
+**Collecting departed users**: `_scan_user_channels` filters on a plain `target_id` int and reads `author_name` off the historical message, so it never needs a `Member`. `_resolve_collect_target` falls through identity → authors → `client.fetch_user()`, returning a `discord.Member` for current members and a `discord.User` otherwise; `_handle_collect` marks the difference with `in_guild` in `users.jsonl`. A departed user who never posted in a scanned channel must be given by ID or @mention — no API maps a username to an ID.
+
+**`/index`**: a top-level command (`_handle_index`), deliberately not a `/collect` flag — as a flag it was indistinguishable from a username when the parser didn't recognise it, and silently became a collect target. It passes `target_id=None` to `_scan_user_channels` for an index-only sweep: authors are recorded, no messages stored. This exists because the index is only written *during* a scan, and a scan only runs *after* a target resolves; without it, a departed user on a never-swept guild can never resolve by name, since the index that would identify them is what the failing command would have created. Run `/index` once per guild before collecting departed users by name. Shares `--channel` / `--since` / `--limit` with `/collect` via `_parse_collect_flags(..., require_targets=False)`. Requires Manage Messages.
+
+**Quoted targets**: `_tokenize_collect()` splits `/collect` args on whitespace but honours `"..."`/`'...'`, so display names containing spaces (`/collect "Kris Dum"`) resolve as one target. Quoted tokens are never interpreted as flags.
 
 ### Models (`Models/`)
 
-Research and training infrastructure for OCR, font classification, and authorship. Separate from the production pipelines — nothing here is imported by `TL-Bot.py`.
+Research and training infrastructure for OCR, font classification, and user recognition. Separate from the production pipelines — nothing here is imported by `TL-Bot.py`.
 
 ```
 Models/
@@ -514,14 +532,17 @@ Models/
     train_2epoch.log            ← baseline CPU run result (2 epochs, head warm-up only)
   UserRecognition/
     README.md                   ← scope, workflow, data requirements
-    author_classifier/          ← transformer authorship model (mirrors char_classifier)
+    user_classifier/          ← transformer user recognition model (mirrors char_classifier)
       data.py / model_builder.py / engine.py / model_utils.py / utils.py / stats.py
-      train.py                  ← two-phase training CLI, checkpoints/<guild_id>/
+      train.py                  ← two-phase training CLI, checkpoints/<guild_id>/;
+                                   --select-metric f1 (default) picks best.pt
       predict.py                ← single-text inference CLI
-      deploy.py                 ← install to ~/.tl-bot/authorship/<guild_id>/
+      deploy.py                 ← install to ~/.tl-bot/user-recognition/<guild_id>/
     checkpoints/<guild_id>/     ← best.pt, config.json, class_names.json, progress.json
-    tests/                      ← test_build_chat.py, test_author_classifier.py (mocked)
+    tests/                      ← test_build_chat.py, test_user_classifier.py (mocked)
 ```
+
+**Checkpoint selection (both classifiers)**: `--select-metric` decides which epoch becomes `best.pt`. `user_classifier` defaults to `f1` because chat corpora are class-imbalanced and accuracy selects a majority-biased checkpoint; `char_classifier` keeps `val_acc` since `char-dataset` is balanced. Both `train.py` files reload `best.pt` before the final test report — previously they scored the live final-epoch model, so the printed metrics described a checkpoint that was never saved (on the first real run: printed macro-F1 0.52, actual `best.pt` 0.4279).
 
 Production feature code never lives under `Models/`. Each `Models/<Area>/` is the research counterpart to a shipped feature: `Models/OCR` → `Translation/2-Image`, `Models/Typography` → `Typography/`, `Models/UserRecognition` → `UserRecognition/`.
 
@@ -530,6 +551,28 @@ Production feature code never lives under `Models/`. Each `Models/<Area>/` is th
 - CJK: only 1,312 of 3,000 classes have ≥ 5 images; the rest are skipped by `build_dataset`. Most CJK classes have 3–4 images because many Windows fonts lack full Joyo coverage. Viable CJK classes contribute ~7,354 training samples.
 - Kana: 3 of 172 classes empty (U+3094/3095/3096 are obsolete kana not in Windows fonts).
 - Latin: 77,799 images across 62 classes — by far the largest script; dominates full-dataset training time.
+
+#### chat-dataset (`Datasets/build_chat.py`)
+
+Reads the bot's collected message history from `UserRecognition/0-Data/data/{guild_id}/` and writes a derived training corpus to `Models/Datasets/chat-dataset/{guild_id}/` (`train/val/test.jsonl`, `label_map.json`, `meta.json`). Segmented by **guild** — the label space differs per guild and `identify.py` is per-guild, so one model per guild is the routing unit.
+
+Five deliberate differences from the production `UserRecognition/0-Data/training/dataset.py`:
+
+- **Chronological split, not random.** The baseline shuffles before splitting, so messages from the same conversation land in both train and val; topic and vocabulary leak across the split and inflate accuracy. Here each author's samples are sorted by timestamp and cut oldest → newest.
+- **Three-way train/val/test.** The baseline emits only train/val.
+- **Bots excluded by default** via the `bot` field in `identity.jsonl`. Templated bot output is trivially separable and turns user recognition into bot detection. `--include-bots` overrides; `--exclude-user` takes IDs or names.
+- **`--chunk N` runs before the length filter.** N consecutive same-author messages are concatenated into one sample, and `--min-tokens` then applies to the assembled chunk. Order matters enormously: filtering messages first discarded 3,280 of 4,054 messages (81%) in the real guild, because Discord messages are short (median 4 tokens). Chunking first recovered them — 167 samples → 973 at `--chunk 4`.
+- **`--holdout-channel`** sends one channel entirely to test, measuring whether the model learned style or just topic.
+
+Refuses to build below 2 surviving authors; emits warnings (short samples, few authors, missing `bot` field) into `meta.json`, which `train.py` echoes at startup. `dropped.short_chunks` counts assembled chunks below `--min-tokens` — if it is large, raise `--chunk`.
+
+```bash
+cd Models/Datasets/
+.venv\Scripts\python.exe build_chat.py --list
+.venv\Scripts\python.exe build_chat.py --guild GUILD_ID --chunk 4
+```
+
+**Data state (2026-07-25):** two guilds collected. The larger (`122861720501878784`, "U W 0 T M 8") holds 4,054 messages; bot exclusion correctly drops Groovy. At `--chunk 4` it builds to 3 authors / 683 train / 145 val / 145 test — alexjade96 (2,158 msg), downinthebend (1,503), sailorwags (227). Still below the 5-author threshold in `Models/UserRecognition/README.md`, but far closer than the first guild's 312 messages / 2 authors.
 
 #### CRAFT detection (`detection/craft_detector.py`) — complete
 
@@ -636,7 +679,7 @@ Always run scripts with `.venv\Scripts\python.exe` — the system Python lacks `
 - **Secrets**: `DISCORD_BOT_TOKEN` and `HF_TOKEN` must never be hardcoded; load from `.env` (gitignored).
 - **No git co-author tags**: Do not add `Co-Authored-By: Claude` lines to commits in this repo.
 - **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Video/data/`, `Translation/0-Data/Synthesized/Audio/data/`, `Translation/0-Data/Synthesized/Image/data/`, `Translation/0-Data/Synthesized/Text/data/`, `Translation/0-Data/Synthesized/Video/data/`, `Translation/0-Data/Image/training/checkpoints/`, `UserRecognition/0-Data/data/`, `Models/Datasets/char-dataset/`, `Models/Datasets/font-dataset/`, `Models/Datasets/windows-fonts/`, `Models/Datasets/chat-dataset/`, `Models/OCR/checkpoints/`, `Models/Typography/checkpoints/`, `Models/UserRecognition/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, model checkpoints, or generated datasets.
-- **Test suite**: `pytest` tests exist under `Translation/1-Text/tests/`, `Translation/2-Image/tests/`, `Translation/3-Audio/tests/`, `Translation/4-Video/tests/`, `Prompt/tests/`, and `UserRecognition/tests/` — registered in `pytest.ini` under `testpaths`. Run with `pytest` from the repo root. All suites use mocks — no network calls required. (229 tests collected; integration tests are marked `integration` and skip without `HF_TOKEN`.) `Models/OCR/` and `Models/Typography/` have no test coverage.
+- **Test suite**: `pytest` tests exist under `Translation/1-Text/tests/`, `Translation/2-Image/tests/`, `Translation/3-Audio/tests/`, `Translation/4-Video/tests/`, `Prompt/tests/`, `UserRecognition/tests/`, `Models/UserRecognition/tests/`, and `tests/` (bot command parsing) — registered in `pytest.ini` under `testpaths`. Run with `pytest` from the repo root. All suites use mocks — no network calls, no model downloads. (284 tests collected; integration tests are marked `integration` and skip without `HF_TOKEN`.) `Models/OCR/` and `Models/Typography/` have no test coverage.
 - **Feature package layout**: every production feature follows the same shape — inference modules at the package root, `tests/` beside them, and a `0-Data/` arm holding `training/` (`collect_*.py`, `dataset.py`, `train.py`, `deploy.py`), `testing/demo.py`, and `data/`. `Translation/`, `UserRecognition/` follow it; `Prompt/` currently has inference + tests only, with no `0-Data/` collection arm.
 - **Preprocessing variants**: All six variants are available in `ocr.py`; `preprocess()` (baseline) is the production default. Use `compare_preprocess.py` to evaluate before switching. `light_denoise` is the most consistent alternative.
 - **Public API surface**: `translate_text()` in `translate_text.py` is the public entry point; `_translate_to_english()` and `_translate_from_english()` are private implementation details.

@@ -1,4 +1,4 @@
-"""Training and evaluation loops for authorship attribution.
+"""Training and evaluation loops for user recognition.
 
 Mirrors char_classifier/engine.py.  Two deliberate differences:
 

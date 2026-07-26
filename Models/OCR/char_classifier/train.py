@@ -81,6 +81,9 @@ def parse_args():
                         'Lower to 1 after re-rendering CJK with more sizes.')
     p.add_argument('--no-weighted-sampler', action='store_true',
                    help='Disable class-balanced WeightedRandomSampler (use shuffle instead)')
+    p.add_argument('--select-metric',    default='val_acc', choices=['val_acc', 'f1'],
+                   help='Metric that decides which epoch becomes best.pt (default val_acc). '
+                        'Use f1 when classes are imbalanced.')
     p.add_argument('--seed',             type=int,   default=42)
     p.add_argument('--num-workers',      type=int,   default=0)
     p.add_argument('--resume',           default=None,
@@ -191,7 +194,10 @@ def main():
     }
 
     # --- Shared epoch-end callback: saves last.pt every epoch, best.pt on improvement ---
-    best_val_acc_ref  = [best_val_acc]
+    # Checkpoint selection metric. char-dataset is broadly balanced, so val_acc
+    # remains the default here; --select-metric f1 is available for skewed sets.
+    _sel = args.select_metric
+    best_score_ref    = [best_val_acc]
     current_optimizer = [optimizer]
 
     # Seed history from a prior run's progress.json so curves.png covers the full run.
@@ -203,8 +209,12 @@ def main():
             for k in all_results:
                 if k in _e:
                     all_results[k].append(_e[k])
-        _best_epoch_ref = [max(_epoch_log, key=lambda e: e.get('val_acc', 0.0)).get('epoch', start_epoch)
-                           if _epoch_log else start_epoch]
+        if _epoch_log:
+            _best = max(_epoch_log, key=lambda e: e.get(_sel, 0.0))
+            _best_epoch_ref = [_best.get('epoch', start_epoch)]
+            best_score_ref  = [_best.get(_sel, best_val_acc)]
+        else:
+            _best_epoch_ref = [start_epoch]
     except Exception:
         _epoch_log = []
         _best_epoch_ref = [start_epoch]
@@ -236,7 +246,7 @@ def main():
             'phase':             _phase,
             'phase_label':       'head warm-up' if _phase == 1 else 'backbone fine-tune',
             'val_acc':           round(float(v_acc), 6),
-            'best_val_acc':      round(float(best_val_acc_ref[0]), 6),
+            'best_score':        round(float(best_score_ref[0]), 6),
             'best_epoch':        _best_epoch_ref[0],
             'epochs_since_best': _epochs_since_best,
             'f1':                _f1,
@@ -249,14 +259,16 @@ def main():
         }
         save_checkpoint(model, current_optimizer[0], g, v_acc,
                         ckpt_dir / 'last.pt', class_names, meta=_meta)
-        if v_acc > best_val_acc_ref[0]:
-            best_val_acc_ref[0] = v_acc
-            _best_epoch_ref[0]  = g
-            _meta['best_val_acc'] = round(float(v_acc), 6)
+        _score = _f1 if _sel == 'f1' else float(v_acc)
+        if _score > best_score_ref[0]:
+            best_score_ref[0]  = _score
+            _best_epoch_ref[0] = g
+            _meta['best_score'] = round(float(_score), 6)
             _meta['best_epoch']   = g
             save_checkpoint(model, current_optimizer[0], g, v_acc,
                             ckpt_dir / 'best.pt', class_names, meta=_meta)
-            print(f'[train] New best: {v_acc:.4f}  f1 {_f1:.4f} -> saved best.pt')
+            print(f'[train] New best ({_sel}): {_score:.4f}  '
+                  f'[acc {v_acc:.4f}  f1 {_f1:.4f}] -> saved best.pt')
         if metrics:
             _epoch_log.append({
                 'epoch':             g,
@@ -279,7 +291,7 @@ def main():
             'epochs_remaining':  _epochs_remaining,
             'phase':             _phase,
             'phase_label':       'head warm-up' if _phase == 1 else 'backbone fine-tune',
-            'best_val_acc':      round(float(best_val_acc_ref[0]), 6),
+            'best_score':        round(float(best_score_ref[0]), 6),
             'best_epoch':        _best_epoch_ref[0],
             'epochs_since_best': _epochs_since_best,
             'last_val_acc':      round(float(v_acc), 6),
@@ -357,7 +369,8 @@ def main():
 
     except KeyboardInterrupt:
         last_pt = ckpt_dir / 'last.pt'
-        print(f'\n[train] Interrupted. Best val acc so far: {best_val_acc_ref[0]:.4f}')
+        print(f'\n[train] Interrupted. Best {_sel} so far: {best_score_ref[0]:.4f} '
+              f'(epoch {_best_epoch_ref[0]})')
         if last_pt.exists():
             saved_epoch = peek_checkpoint_epoch(str(last_pt))
             print(f'[train] last.pt saved at epoch {saved_epoch}: {last_pt}')
@@ -377,8 +390,16 @@ def main():
     if writer:
         writer.close()
 
-    print(f'[train] Best val acc: {best_val_acc_ref[0]:.4f}')
-    print('[train] Evaluating on test set ...')
+    print(f'[train] Best {_sel}: {best_score_ref[0]:.4f} (epoch {_best_epoch_ref[0]})')
+
+    # Evaluate the checkpoint deploy/compare will actually load, not the live
+    # final-epoch model. They differ whenever the best epoch is not the last.
+    best_pt = ckpt_dir / 'best.pt'
+    if best_pt.exists():
+        load_checkpoint(best_pt, model, device=device)
+        print(f'[train] Evaluating best.pt (epoch {_best_epoch_ref[0]}) on test set ...')
+    else:
+        print('[train] No best.pt - evaluating the final-epoch model on test set ...')
     print_report(model, test_loader, class_names, device)
     plot_curves(all_results, save_path=str(ckpt_dir / 'curves.png'))
 

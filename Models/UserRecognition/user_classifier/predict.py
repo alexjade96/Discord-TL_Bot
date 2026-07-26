@@ -1,11 +1,11 @@
-"""Single-text inference for a trained authorship classifier.
+"""Single-text inference for a trained user recognition classifier.
 
 Loads from a checkpoint directory (checkpoints/<guild_id>/) rather than the
 deployed model root, so a model can be inspected before deploy.py installs it.
 
 CLI:
-    python -m author_classifier.predict --guild <ID> --text "some message"
-    python -m author_classifier.predict --guild <ID> --text "..." --top 3
+    python -m user_classifier.predict --guild <ID> --text "some message"
+    python -m user_classifier.predict --guild <ID> --text "..." --top 3
 """
 
 import argparse
@@ -41,7 +41,7 @@ def load(checkpoint_dir) -> tuple:
     if not ckpt_path.exists():
         raise FileNotFoundError(
             f'No best.pt in {d}. Train first:\n'
-            f'  python -m author_classifier.train --guild <GUILD_ID>'
+            f'  python -m user_classifier.train --guild <GUILD_ID>'
         )
     if not config_path.exists():
         raise FileNotFoundError(f'No config.json in {d} — cannot determine the backbone.')
@@ -80,7 +80,7 @@ def predict(text: str, checkpoint_dir) -> list:
 
 
 def main():
-    p = argparse.ArgumentParser(description='Rank likely authors of a message.')
+    p = argparse.ArgumentParser(description='Rank likely senders of a message.')
     p.add_argument('--guild', required=True, help='Guild ID')
     p.add_argument('--text',  required=True, help='Message text to classify')
     p.add_argument('--top',   type=int, default=0, help='Show top N results (default: all)')

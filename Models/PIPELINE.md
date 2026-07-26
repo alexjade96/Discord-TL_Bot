@@ -11,6 +11,7 @@ Models/
   Datasets/             ← data generators (shared)
     get_fonts.py        ← scan Windows fonts → font-dataset/ (font classifier)
     render_chars.py     ← render chars → char-dataset/{latin,kana,hangul,cjk}/
+    build_chat.py       ← collected Discord history → chat-dataset/{guild_id}/
     sample_tilegrid*.py ← visual sanity checks for grid augments
     char-dataset/
       latin/            ← 62 classes, 77,799 images
@@ -18,6 +19,8 @@ Models/
       hangul/           ← 500 classes, 6,000 images
       cjk/              ← 3,000 classes (1,312 viable), 10,506 images
     font-dataset/       ← 21,676 images (get_fonts output)
+    chat-dataset/
+      {guild_id}/       ← train/val/test.jsonl, label_map.json, meta.json
 
   OCR/
     grid_augments.py                  ← 6 grid transforms + RandomGridAugment
@@ -34,6 +37,11 @@ Models/
     font_classifier/   ← DINOv2 font family classifier (9 modules, mirrors OCR)
     Font_Classifier.ipynb
     train_2epoch.log   ← baseline run result
+
+  UserRecognition/
+    user_classifier/ ← transformer user recognition model (mirrors char_classifier)
+    checkpoints/<guild_id>/
+    tests/             ← test_build_chat.py, test_user_classifier.py
 ```
 
 ---
@@ -188,6 +196,38 @@ cd Models/Typography
 .venv\Scripts\python.exe -m font_classifier.train \
     --epochs 30 --freeze-epochs 5 \
     --backbone dinov2_vits14 --batch-size 64
+```
+
+---
+
+### 5. UserRecognition / user_classifier — PIPELINE VERIFIED, BLOCKED ON DATA
+
+Transformer user recognition. Full path exists and runs end to end:
+`build_chat.py` → `user_classifier.train` → `predict` → `deploy` →
+`UserRecognition/identify.py` (which dispatches on `meta.json`'s `model_type`,
+so deploying supersedes the TF-IDF baseline with no bot change).
+
+Backbones via `--backbone`: `xlm-roberta-base` (278M, default, multilingual) and
+`distilbert-base-multilingual-cased` (134M, ~2x faster on CPU).
+
+**Blocked on data, not code.** The one collected guild holds 312 messages from
+2 authors — one being TL-Bot itself — in 1 channel, median 4 tokens per
+message, and the human's messages are largely bot commands (`$hello`,
+`/translate`). A 2-epoch DistilBERT smoke run reached 1.00 test accuracy on 7
+test samples; that number reflects "bot reply vs slash command", not user recognition,
+and is evidence the pipeline runs, nothing more.
+
+Threshold before results are meaningful: **5+ human authors, 500+ messages each
+at >=10 tokens, across >=2 channels.** `build_chat.py` refuses below 2 authors
+and writes warnings into `meta.json`; `train.py` echoes them at startup.
+
+```powershell
+cd Models/Datasets
+.venv\Scripts\python.exe build_chat.py --guild GUILD_ID --chunk 4
+
+cd Models/UserRecognition
+.venv\Scripts\python.exe -m user_classifier.train --guild GUILD_ID
+.venv\Scripts\python.exe -m user_classifier.deploy --guild GUILD_ID
 ```
 
 ---

@@ -190,12 +190,51 @@ class TestChunking:
 # ── Filtering ────────────────────────────────────────────────────────────────
 
 class TestFiltering:
-    def test_min_tokens_drops_short_messages(self, tmp_path):
+    def test_min_tokens_applies_to_chunks_not_messages(self, tmp_path):
+        """Short messages must survive into chunks rather than being dropped
+        individually — filtering first discards ~80% of a real corpus."""
+        root = tmp_path / "src"
+        msgs = []
+        for uid, name in (("u1", "alice"), ("u2", "bob")):
+            for i in range(40):
+                msgs.append(_msg(f"{uid}{i}", uid, name, "hi",   # 1 token each
+                                 f"2026-01-{i + 1:02d}T00:00:00+00:00"))
+        _write_jsonl(root / "g1" / "messages.jsonl", msgs)
+        _write_jsonl(root / "g1" / "users.jsonl", [
+            {"user_id": "u1", "username": "alice"}, {"user_id": "u2", "username": "bob"}])
+
+        out = tmp_path / "out"
+        # chunk 4 assembles 4 x "hi" = 4 tokens, clearing min_tokens 3.
+        stats = build_chat.build("g1", source_root=root, out_root=out,
+                                 chunk=4, min_tokens=3, min_messages=10)
+        assert "error" not in stats
+        assert stats["dropped"].get("short_chunks", 0) == 0
+        assert stats["train"] > 0
+
+    def test_chunks_below_min_tokens_are_dropped(self, tmp_path):
+        root = tmp_path / "src"
+        msgs = []
+        for uid, name in (("u1", "alice"), ("u2", "bob")):
+            for i in range(40):
+                msgs.append(_msg(f"{uid}{i}", uid, name, "hi",
+                                 f"2026-01-{i + 1:02d}T00:00:00+00:00"))
+        _write_jsonl(root / "g1" / "messages.jsonl", msgs)
+        _write_jsonl(root / "g1" / "users.jsonl", [
+            {"user_id": "u1", "username": "alice"}, {"user_id": "u2", "username": "bob"}])
+
+        out = tmp_path / "out"
+        # chunk 2 gives 2-token samples, below min_tokens 5 -> nothing survives.
+        stats = build_chat.build("g1", source_root=root, out_root=out,
+                                 chunk=2, min_tokens=5, min_messages=10)
+        assert "error" in stats
+        assert "min-tokens" in stats["error"]
+
+    def test_empty_messages_dropped(self, tmp_path):
         root = tmp_path / "src"
         msgs = []
         for uid, name in (("u1", "alice"), ("u2", "bob")):
             for i in range(25):
-                text = "hi" if i < 5 else f"a longer message from {name} number {i}"
+                text = "" if i < 5 else f"a longer message from {name} number {i}"
                 msgs.append(_msg(f"{uid}{i}", uid, name, text,
                                  f"2026-01-{i + 1:02d}T00:00:00+00:00"))
         _write_jsonl(root / "g1" / "messages.jsonl", msgs)
@@ -205,7 +244,7 @@ class TestFiltering:
         out = tmp_path / "out"
         stats = build_chat.build("g1", source_root=root, out_root=out,
                                  min_tokens=3, min_messages=10)
-        assert stats["dropped"]["short"] == 10
+        assert stats["dropped"]["empty"] == 10
 
     def test_min_messages_drops_sparse_authors(self, source, tmp_path):
         out = tmp_path / "out"
@@ -218,6 +257,60 @@ class TestFiltering:
 
 
 # ── Outputs ──────────────────────────────────────────────────────────────────
+
+class TestPerUserLayout:
+    """Collection stores users/{user_id}.jsonl; a legacy messages.jsonl is still
+    read so an unmigrated guild keeps working."""
+
+    def _write_per_user(self, root, guild="g1"):
+        d = root / guild / "users"
+        for uid, name in (("u1", "alice"), ("u2", "bob")):
+            rows = [
+                _msg(f"{uid}{i}", uid, name, f"{name} message {i} with several words",
+                     f"2026-01-{i + 1:02d}T00:00:00+00:00")
+                for i in range(30)
+            ]
+            _write_jsonl(d / f"{uid}.jsonl", rows)
+        _write_jsonl(root / guild / "users.jsonl", [
+            {"user_id": "u1", "username": "alice"},
+            {"user_id": "u2", "username": "bob"},
+        ])
+
+    def test_reads_per_user_files(self, tmp_path):
+        root = tmp_path / "src"
+        self._write_per_user(root)
+        out = tmp_path / "out"
+        stats = build_chat.build("g1", source_root=root, out_root=out)
+        assert stats["authors"] == 2
+        assert stats["messages_in"] == 60
+
+    def test_user_id_comes_from_filename(self, tmp_path):
+        root = tmp_path / "src"
+        self._write_per_user(root)
+        out = tmp_path / "out"
+        build_chat.build("g1", source_root=root, out_root=out)
+        assert {r["author_id"] for r in _read(out, "train")} == {"u1", "u2"}
+
+    def test_per_user_layout_wins_over_legacy(self, tmp_path):
+        """When both exist, the per-user files are authoritative."""
+        root = tmp_path / "src"
+        self._write_per_user(root)
+        _write_jsonl(root / "g1" / "messages.jsonl", [
+            _msg("legacy1", "u9", "stale", "stale message that should be ignored",
+                 "2020-01-01T00:00:00+00:00")
+        ])
+        out = tmp_path / "out"
+        stats = build_chat.build("g1", source_root=root, out_root=out)
+        assert stats["messages_in"] == 60
+        assert "u9" not in {r["author_id"] for r in _read(out, "train")}
+
+    def test_falls_back_to_legacy_messages_file(self, source, tmp_path):
+        """The `source` fixture writes only messages.jsonl — still builds."""
+        out = tmp_path / "out"
+        stats = build_chat.build("g1", source_root=source, out_root=out)
+        assert "error" not in stats
+        assert stats["authors"] == 2
+
 
 class TestOutputs:
     def test_writes_all_expected_files(self, source, tmp_path):

@@ -1,15 +1,15 @@
-"""Install a trained authorship classifier for local inference.
+"""Install a trained user recognition classifier for local inference.
 
-Copies checkpoints/<guild_id>/ into ~/.tl-bot/authorship/<guild_id>/ so
+Copies checkpoints/<guild_id>/ into ~/.tl-bot/user-recognition/<guild_id>/ so
 UserRecognition/identify.py loads it automatically. identify.py dispatches on
 the "model_type" field this script writes into meta.json, so deploying here
 takes over from the TF-IDF baseline without any code change in the bot.
 
 Usage:
-    python -m author_classifier.deploy --guild <ID>
-    python -m author_classifier.deploy --guild <ID> --checkpoint path/to/last.pt
-    python -m author_classifier.deploy --list
-    python -m author_classifier.deploy --remove <ID>          # revert to TF-IDF
+    python -m user_classifier.deploy --guild <ID>
+    python -m user_classifier.deploy --guild <ID> --checkpoint path/to/last.pt
+    python -m user_classifier.deploy --list
+    python -m user_classifier.deploy --remove <ID>          # revert to TF-IDF
 """
 
 import argparse
@@ -20,7 +20,7 @@ from pathlib import Path
 
 _HERE          = Path(__file__).parent
 _DEFAULT_CKPTS = _HERE.parent / 'checkpoints'
-_MODEL_ROOT    = Path.home() / '.tl-bot' / 'authorship'
+_MODEL_ROOT    = Path.home() / '.tl-bot' / 'user-recognition'
 
 # Written by the TF-IDF baseline (UserRecognition/0-Data/training/train.py).
 _TFIDF_FILES = ('word_vec.pkl', 'char_vec.pkl', 'clf.pkl')
@@ -38,7 +38,7 @@ def deploy(guild_id: str, checkpoint: Path | None = None,
         if not p.exists():
             raise FileNotFoundError(
                 f'{p} not found. Train first:\n'
-                f'  python -m author_classifier.train --guild {guild_id}'
+                f'  python -m user_classifier.train --guild {guild_id}'
             )
 
     dest = _MODEL_ROOT / str(guild_id)
@@ -125,7 +125,7 @@ def remove(guild_id: str) -> dict:
 
 
 def main():
-    p = argparse.ArgumentParser(description='Deploy an authorship classifier for local inference.')
+    p = argparse.ArgumentParser(description='Deploy an user recognition classifier for local inference.')
     p.add_argument('--guild',      default=None, help='Guild ID to deploy')
     p.add_argument('--checkpoint', default=None, type=Path,
                    help='Checkpoint to install (default: checkpoints/<guild_id>/best.pt)')
@@ -158,7 +158,7 @@ def main():
     result = deploy(args.guild, checkpoint=args.checkpoint,
                     checkpoint_dir=args.checkpoint_dir,
                     keep_tfidf=not args.replace_tfidf)
-    print(f'Deployed authorship model for guild {args.guild}:')
+    print(f'Deployed user recognition model for guild {args.guild}:')
     print(f'  Destination: {result["dest"]}')
     print(f'  Backbone:    {result["meta"]["backbone"]}')
     print(f'  Authors:     {result["meta"]["num_classes"]}')

@@ -1,4 +1,4 @@
-"""Transformer encoder + classification head for authorship attribution.
+"""Transformer encoder + classification head for user recognition.
 
 Mirrors char_classifier/model_builder.py: a factory over several backbones,
 each returning a frozen-by-default encoder wrapped in a two-layer MLP head.

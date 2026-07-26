@@ -1,4 +1,4 @@
-"""Train an authorship attribution classifier for a guild.
+"""Train an user recognition classifier for a guild.
 
 Uses TF-IDF (word + char n-grams) with Logistic Regression — fast, CPU-only,
 effective at hundreds of messages per user.
@@ -16,7 +16,7 @@ import pickle
 from pathlib import Path
 
 _DATA_ROOT  = Path(__file__).parent.parent / "data"
-_MODEL_ROOT = Path.home() / ".tl-bot" / "authorship"
+_MODEL_ROOT = Path.home() / ".tl-bot" / "user-recognition"
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -178,7 +178,7 @@ def evaluate(guild_id: str) -> dict:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train authorship attribution model.")
+    parser = argparse.ArgumentParser(description="Train user recognition model.")
     parser.add_argument("--guild",        required=True, help="Guild ID")
     parser.add_argument("--min-tokens",   type=int, default=3)
     parser.add_argument("--min-messages", type=int, default=20)

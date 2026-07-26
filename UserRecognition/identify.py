@@ -1,12 +1,12 @@
-"""Authorship attribution inference.
+"""User recognition inference.
 
 Two backends share one public API. Which one serves a guild is decided by the
-"model_type" field in ~/.tl-bot/authorship/<guild_id>/meta.json:
+"model_type" field in ~/.tl-bot/user-recognition/<guild_id>/meta.json:
 
     tfidf   TF-IDF + Logistic Regression, installed by
             UserRecognition/0-Data/training/deploy.py (the shipped baseline)
     neural  fine-tuned transformer, installed by
-            Models/UserRecognition/author_classifier/deploy.py
+            Models/UserRecognition/user_classifier/deploy.py
 
 When both are installed the neural model wins; removing it falls back to
 TF-IDF. Callers see no difference.
@@ -32,14 +32,14 @@ try:
 except ImportError:  # graceful import failure; tests mock this
     _hstack = None  # type: ignore[assignment]
 
-_MODEL_ROOT = Path.home() / ".tl-bot" / "authorship"
+_MODEL_ROOT = Path.home() / ".tl-bot" / "user-recognition"
 
 _TFIDF_FILES  = ("word_vec.pkl", "char_vec.pkl", "clf.pkl")
 _NEURAL_FILES = ("model.pt", "config.json", "class_names.json")
 
 _TRAIN_HINT = (
     "Run: python UserRecognition/0-Data/training/deploy.py --guild {gid}\n"
-    "  or: python -m author_classifier.train --guild {gid}   (from Models/UserRecognition/)"
+    "  or: python -m user_classifier.train --guild {gid}   (from Models/UserRecognition/)"
 )
 
 # Module-level cache: {guild_id: (backend, payload)}
@@ -87,13 +87,13 @@ def _load_neural(d: Path):
 
     import torch
 
-    # author_classifier lives in the research tree; add it to the path only when
+    # user_classifier lives in the research tree; add it to the path only when
     # a neural model is actually being served, so the TF-IDF path stays free of
     # any torch/transformers import.
-    ac_dir = Path(__file__).parent.parent / "Models" / "UserRecognition"
-    if str(ac_dir) not in sys.path:
-        sys.path.insert(0, str(ac_dir))
-    from author_classifier.model_builder import create_model, create_tokenizer  # noqa: E402
+    _uc_dir = Path(__file__).parent.parent / "Models" / "UserRecognition"
+    if str(_uc_dir) not in sys.path:
+        sys.path.insert(0, str(_uc_dir))
+    from user_classifier.model_builder import create_model, create_tokenizer  # noqa: E402
 
     config      = json.loads((d / "config.json").read_text(encoding="utf-8"))
     class_names = json.loads((d / "class_names.json").read_text(encoding="utf-8"))
@@ -161,7 +161,7 @@ def _identify_neural(text: str, payload) -> list[dict]:
 
 def identify(text: str, guild_id: str) -> list[dict]:
     """
-    Return ranked list of probable authors for text.
+    Return ranked list of probable senders for text.
 
     Each entry: {"username": str, "label": int, "score": float}
     Sorted by score descending (most likely first).
@@ -175,7 +175,7 @@ def identify(text: str, guild_id: str) -> list[dict]:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Rank likely authors of a message.")
+    parser = argparse.ArgumentParser(description="Rank likely senders of a message.")
     parser.add_argument("--guild", required=True, help="Guild ID")
     parser.add_argument("--text",  required=True, help="Message text to classify")
     parser.add_argument("--top",   type=int, default=0, help="Show top N results (default: all)")
@@ -193,5 +193,8 @@ if __name__ == "__main__":
     print(f"Backend: {model_type(args.guild)}")
     print(f"Text: {args.text!r}\n")
     for rank, r in enumerate(results, 1):
-        bar = "█" * int(r["score"] * 20) + "░" * (20 - int(r["score"] * 20))
+        # ASCII bar: the Windows console defaults to cp1252, which cannot encode
+        # block-drawing characters.
+        filled = int(r["score"] * 20)
+        bar = "#" * filled + "." * (20 - filled)
         print(f"  {rank}. {r['username']:<20} {bar}  {r['score']*100:.1f}%")

@@ -1,4 +1,4 @@
-"""Tests for author_classifier — tokenizer and torch model loading are mocked.
+"""Tests for user_classifier — tokenizer and torch model loading are mocked.
 
 Covers the parts that run without downloading a backbone: dataset loading,
 augmentation invariants, and deploy/remove filesystem behaviour.
@@ -15,8 +15,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from author_classifier import data as ac_data      # noqa: E402
-from author_classifier import deploy as ac_deploy  # noqa: E402
+from user_classifier import data as ac_data      # noqa: E402
+from user_classifier import deploy as ac_deploy  # noqa: E402
 
 
 class _FakeTokenizer:
@@ -234,7 +234,7 @@ class TestDeploy:
 
 class TestModelBuilder:
     def test_rejects_unknown_backbone(self):
-        from author_classifier.model_builder import create_model, create_tokenizer
+        from user_classifier.model_builder import create_model, create_tokenizer
         with pytest.raises(ValueError):
             create_model("bert-base-uncased", num_classes=2)
         with pytest.raises(ValueError):
@@ -242,12 +242,12 @@ class TestModelBuilder:
 
     def test_masked_mean_respects_attention_mask(self):
         import torch
-        from author_classifier.model_builder import _masked_mean
+        from user_classifier.model_builder import _masked_mean
         hidden = torch.tensor([[[1.0, 1.0], [3.0, 3.0], [99.0, 99.0]]])
         mask   = torch.tensor([[1, 1, 0]])          # third token is padding
         assert torch.allclose(_masked_mean(hidden, mask), torch.tensor([[2.0, 2.0]]))
 
     def test_both_backbones_are_offered(self):
-        from author_classifier.model_builder import BACKBONE_CHOICES
+        from user_classifier.model_builder import BACKBONE_CHOICES
         assert "xlm-roberta-base" in BACKBONE_CHOICES
         assert "distilbert-base-multilingual-cased" in BACKBONE_CHOICES

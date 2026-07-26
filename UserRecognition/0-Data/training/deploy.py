@@ -1,7 +1,7 @@
-"""Deploy the authorship attribution model for a guild.
+"""Deploy the user recognition model for a guild.
 
 Runs dataset.py → train.py in sequence and installs the resulting artifacts
-to ~/.tl-bot/authorship/<guild_id>/ so identify.py can load them automatically.
+to ~/.tl-bot/user-recognition/<guild_id>/ so identify.py can load them automatically.
 
 Usage:
     python deploy.py --guild GUILD_ID
@@ -17,7 +17,7 @@ import shutil
 import sys
 from pathlib import Path
 
-_MODEL_ROOT = Path.home() / ".tl-bot" / "authorship"
+_MODEL_ROOT = Path.home() / ".tl-bot" / "user-recognition"
 _TRAINING_DIR = Path(__file__).parent
 
 
@@ -25,7 +25,7 @@ def list_installed() -> None:
     if not _MODEL_ROOT.exists() or not any(_MODEL_ROOT.iterdir()):
         print(f"No models installed in {_MODEL_ROOT}")
         return
-    print(f"Installed authorship models in {_MODEL_ROOT}:")
+    print(f"Installed user recognition models in {_MODEL_ROOT}:")
     for d in sorted(_MODEL_ROOT.iterdir()):
         if not d.is_dir():
             continue
@@ -77,7 +77,7 @@ def deploy(guild_id: str, split: float, min_tokens: int, min_messages: int) -> N
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Deploy authorship attribution model.")
+    parser = argparse.ArgumentParser(description="Deploy user recognition model.")
     parser.add_argument("--guild",        default=None, help="Guild ID to deploy")
     parser.add_argument("--split",        type=float, default=0.85, help="Train fraction (default 0.85)")
     parser.add_argument("--min-tokens",   type=int,   default=3,    help="Min tokens per message (default 3)")

@@ -56,7 +56,7 @@ from prompt import ask as prompt_ask  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent / "UserRecognition" / "0-Data" / "training"))
 import collect_history as _collect_history  # noqa: E402
 
-# Authorship attribution inference
+# User recognition inference
 sys.path.insert(0, str(Path(__file__).parent / "UserRecognition"))
 import identify as _identify  # noqa: E402
 
@@ -235,9 +235,33 @@ def _parse_translate_flags(cmd: str) -> tuple[str, str | None, str | None, bool,
 _COLLECT_MENTION_RE = re.compile(r'<@!?(\d+)>')
 _COLLECT_CHANNEL_RE = re.compile(r'<#(\d+)>')
 
+# A quoted span, or a run of non-whitespace. Lets display names containing
+# spaces be passed as one target: /collect "Paul ohannigan"
+_COLLECT_TOKEN_RE = re.compile(r'"([^"]*)"|\'([^\']*)\'|(\S+)')
 
-def _parse_collect_flags(cmd: str, guild) -> tuple:
-    """Parse /collect arguments.
+
+def _tokenize_collect(cmd: str) -> list:
+    """Split a /collect argument string into [(token, was_quoted), ...].
+
+    Quoted tokens are never treated as flags and never split, so a name that
+    collides with a flag or contains spaces still resolves.
+    """
+    out = []
+    for m in _COLLECT_TOKEN_RE.finditer(cmd):
+        dq, sq, bare = m.groups()
+        if dq is not None:
+            if dq.strip():
+                out.append((dq.strip(), True))
+        elif sq is not None:
+            if sq.strip():
+                out.append((sq.strip(), True))
+        else:
+            out.append((bare, False))
+    return out
+
+
+def _parse_collect_flags(cmd: str, guild, require_targets: bool = True) -> tuple:
+    """Parse /collect (and /index) arguments.
 
     Returns (targets, channel, since, limit, errors).
     targets is a list of int user IDs and/or str names (one per space-separated token),
@@ -246,8 +270,12 @@ def _parse_collect_flags(cmd: str, guild) -> tuple:
     since is a datetime.datetime (UTC) or None.
     limit is an int or None (means no limit).
 
+    require_targets=False is used by /index, which takes the same --channel /
+    --since / --limit flags but no user targets.
+
     Batch mode: --batch reads targets from data/{guild_id}/targets.txt (one username/ID per line).
     Space-separated: /collect user1 user2 @mention3 collects all three in sequence.
+    Quoted: /collect "Paul ohannigan" passes a display name containing spaces as one target.
     """
     errors: list[str] = []
     targets: list = []
@@ -256,14 +284,17 @@ def _parse_collect_flags(cmd: str, guild) -> tuple:
     limit: int | None = None
     batch = False
 
-    tokens = cmd.split()
+    parsed = _tokenize_collect(cmd)
+    tokens = [t for t, _ in parsed]
+    quoted = [q for _, q in parsed]
     remaining: list[str] = []
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        if tok == "--batch":
+        is_flag = not quoted[i]
+        if is_flag and tok == "--batch":
             batch = True
-        elif tok == "--channel" and i + 1 < len(tokens):
+        elif is_flag and tok == "--channel" and i + 1 < len(tokens):
             i += 1
             val = tokens[i]
             m = _COLLECT_CHANNEL_RE.match(val)
@@ -276,7 +307,7 @@ def _parse_collect_flags(cmd: str, guild) -> tuple:
                     errors.append(f"_Channel `{cid}` not found in this server._")
                 else:
                     channel = ch
-        elif tok == "--since" and i + 1 < len(tokens):
+        elif is_flag and tok == "--since" and i + 1 < len(tokens):
             i += 1
             try:
                 since = datetime.datetime.strptime(tokens[i], "%Y-%m-%d").replace(
@@ -284,7 +315,7 @@ def _parse_collect_flags(cmd: str, guild) -> tuple:
                 )
             except ValueError:
                 errors.append(f"_Invalid `--since` date `{tokens[i]}` — use YYYY-MM-DD._")
-        elif tok == "--limit" and i + 1 < len(tokens):
+        elif is_flag and tok == "--limit" and i + 1 < len(tokens):
             i += 1
             if tokens[i].isdigit():
                 limit = int(tokens[i])
@@ -305,10 +336,12 @@ def _parse_collect_flags(cmd: str, guild) -> tuple:
                 targets.append(int(tok))
             else:
                 targets.append(tok)  # plain name — resolved against identity table
-    else:
+    elif require_targets:
         errors.append(
             "_Usage: `/collect user1 [user2 ...] [--channel #ch] [--since YYYY-MM-DD] [--limit N]`_\n"
-            "_Or `/collect --batch` to collect all users listed in `targets.txt` for this guild._"
+            "_Quote names containing spaces: `/collect \"Display Name\"`_\n"
+            "_`/index` builds the user index (needed to reach users who have left)._\n"
+            "_`/collect --batch` collects all users listed in `targets.txt` for this guild._"
         )
 
     return targets, channel, since, limit, errors
@@ -1239,7 +1272,7 @@ async def _scan_members(guild: discord.Guild, guild_id: str) -> int:
 async def _scan_user_channels(
     guild: discord.Guild,
     guild_id: str,
-    target_id: int,
+    target_id: int | None,
     channels: list,
     since,
     limit,
@@ -1247,13 +1280,24 @@ async def _scan_user_channels(
     status: discord.Message,
     label: str = "",
 ) -> tuple:
-    """Scan channels for messages from target_id. Returns (msg_found, msg_new, skipped, first_ts, last_ts)."""
+    """Scan channels for messages from target_id. Returns (msg_found, msg_new, skipped, first_ts, last_ts).
+
+    Every author encountered is recorded into authors.jsonl, not just the target.
+    The loop already visits each message, so indexing the authors costs nothing
+    and is what later makes a departed user resolvable by name.
+
+    target_id=None performs an index-only sweep: authors are recorded but no
+    messages are stored. `/index` uses this, because the index has to
+    be buildable *before* a departed user can be resolved — otherwise resolving
+    them would require an index that only a successful resolution could create.
+    """
     total_ch  = len(channels)
     msg_found = 0
     msg_new   = 0
     skipped   = []
     first_ts: str | None = None
     last_ts:  str | None = None
+    seen_authors: dict = {}
 
     for idx, ch in enumerate(channels, 1):
         if idx % 5 == 0 or idx == total_ch:
@@ -1279,7 +1323,30 @@ async def _scan_user_channels(
             try:
                 after = discord.Object(id=discord.utils.time_snowflake(since)) if since else None
                 async for msg in ch.history(limit=limit, after=after, oldest_first=True):
-                    if msg.author.id != target_id:
+                    # Index every author seen, before filtering to the target.
+                    a_id = str(msg.author.id)
+                    a_ts = msg.created_at.isoformat()
+                    prior = seen_authors.get(a_id)
+                    if prior is None:
+                        seen_authors[a_id] = {
+                            "user_id":       a_id,
+                            "guild_id":      guild_id,
+                            "username":      msg.author.name,
+                            "display_name":  getattr(msg.author, "display_name", msg.author.name),
+                            "is_bot":        bool(msg.author.bot),
+                            "first_seen_at": a_ts,
+                            "last_seen_at":  a_ts,
+                        }
+                    else:
+                        if a_ts < prior["first_seen_at"]:
+                            prior["first_seen_at"] = a_ts
+                        if a_ts > prior["last_seen_at"]:
+                            prior["last_seen_at"] = a_ts
+
+                    # target_id None = index-only sweep: record who posted,
+                    # store nothing. Lets the author index be built before any
+                    # target has been resolved.
+                    if target_id is None or msg.author.id != target_id:
                         continue
 
                     reply_author_id   = None
@@ -1350,11 +1417,33 @@ async def _scan_user_channels(
             "message_count_collected": ch_count,
         }, guild_id)
 
+    if seen_authors:
+        try:
+            new_authors = _collect_history.save_authors(list(seen_authors.values()), guild_id)
+            if new_authors:
+                logger.info("Indexed %d new author(s) into authors.jsonl for guild %s",
+                            new_authors, guild_id)
+        except Exception:
+            logger.exception("Failed to save author index for guild %s", guild_id)
+
     return msg_found, msg_new, skipped, first_ts, last_ts
 
 
-async def _resolve_collect_target(target_raw, guild: discord.Guild, identity: dict, member_count: int):
-    """Resolve a collect target (int ID, str name, or @mention str) to a discord.Member, or return None."""
+async def _resolve_collect_target(target_raw, guild: discord.Guild, identity: dict,
+                                  member_count: int, authors: dict | None = None):
+    """Resolve a collect target (int ID, str name, or @mention str) to a Member or User.
+
+    Users who have left the server are still resolvable: their messages remain in
+    channel history, and `_scan_user_channels` filters on a plain user ID rather
+    than a Member object. Name lookup falls through identity.jsonl (current
+    members) to authors.jsonl (everyone ever seen posting, including departed
+    users); ID lookup falls through to a global user fetch.
+
+    Returns (target, error_message). `target` is a discord.Member when the user is
+    still in the guild, otherwise a discord.User.
+    """
+    authors = authors or {"by_id": {}, "by_name": {}}
+
     if isinstance(target_raw, int):
         target_id = target_raw
     else:
@@ -1364,18 +1453,97 @@ async def _resolve_collect_target(target_raw, guild: discord.Guild, identity: di
         elif target_raw.isdigit():
             target_id = int(target_raw)
         else:
-            match = identity["by_name"].get(target_raw.lower())
+            key   = target_raw.lower()
+            match = identity["by_name"].get(key) or authors["by_name"].get(key)
             if match is None:
-                return None, f"_No member found with name `{target_raw}` ({member_count} indexed)._"
+                if authors["by_name"]:
+                    hint = (f"{len(authors['by_id'])} user(s) indexed from history — "
+                            f"they have not posted in any scanned channel. "
+                            f"Pass their user ID or @mention.")
+                else:
+                    # The index has never been built, so a departed user cannot
+                    # resolve by name yet. Point at the command that builds it.
+                    hint = ("No history index yet — run `/index` first "
+                            "to make users who have left the server resolvable by name.")
+                return None, (
+                    f"_No member found with name `{target_raw}` "
+                    f"({member_count} current members). {hint}_"
+                )
             target_id = int(match["user_id"])
 
     member = guild.get_member(target_id)
-    if member is None:
-        try:
-            member = await guild.fetch_member(target_id)
-        except discord.NotFound:
-            return None, f"_User ID `{target_id}` not found in this server._"
-    return member, None
+    if member is not None:
+        return member, None
+    try:
+        return await guild.fetch_member(target_id), None
+    except discord.NotFound:
+        pass
+    except discord.HTTPException as exc:
+        # Rate limit or transient failure — fall through to the global fetch
+        # rather than aborting the whole collect run.
+        logger.warning("fetch_member(%s) failed on guild %s: %s", target_id, guild.id, exc)
+
+    # Not a current member — resolve globally so their history is still collectable.
+    try:
+        user = await client.fetch_user(target_id)
+    except discord.NotFound:
+        return None, f"_No Discord user exists with ID `{target_id}`._"
+    except discord.HTTPException as exc:
+        return None, f"_Could not look up user ID `{target_id}`: {exc}_"
+    logger.info("Collect target %s (%s) is no longer in guild %s — using global user record",
+                target_id, user.name, guild.id)
+    return user, None
+
+
+async def _handle_index(cmd: str, message: discord.Message) -> None:
+    """Sweep channels and record every user who has posted, storing no messages.
+
+    Separate from /collect because the index must be buildable *before* any
+    target has been resolved: the index is what makes a user who has left the
+    server resolvable by name, so requiring a resolved target to build it would
+    be circular.
+    """
+    if message.guild is None:
+        await message.channel.send("_`/index` only works inside a server._")
+        return
+
+    invoker = message.author
+    if not (invoker.guild_permissions.manage_messages
+            or invoker.guild_permissions.administrator):
+        await message.channel.send("_`/index` requires **Manage Messages** permission._")
+        return
+
+    _, channel_filter, since, limit, errors = _parse_collect_flags(cmd, message.guild,
+                                                                   require_targets=False)
+    for err in errors:
+        await message.channel.send(err)
+    if errors:
+        return
+
+    guild_id = str(message.guild.id)
+    status   = await message.channel.send("_Indexing server members..._")
+    await _scan_members(message.guild, guild_id)
+    channels = [channel_filter] if channel_filter else list(message.guild.text_channels)
+    _, _, skipped, _, _ = await _scan_user_channels(
+        message.guild, guild_id, None, channels, since, limit, set(), status,
+        label="index",
+    )
+
+    index    = _collect_history.load_authors(guild_id)
+    identity = _collect_history.load_identity(guild_id)
+    departed = [r for uid, r in index["by_id"].items()
+                if uid not in identity["by_id"] and not r.get("is_bot")]
+    lines = [
+        "**User index built.**",
+        f"{len(index['by_id'])} user(s) seen posting"
+        f"{f' ({len(skipped)} channel(s) skipped)' if skipped else ''}.",
+    ]
+    if departed:
+        shown = ", ".join(f"`{r.get('username', r['user_id'])}`" for r in departed[:15])
+        more  = f" (+{len(departed) - 15} more)" if len(departed) > 15 else ""
+        lines.append(f"{len(departed)} no longer in the server: {shown}{more}")
+        lines.append("_These are now collectable by name with `/collect`._")
+    await status.edit(content="\n".join(lines))
 
 
 async def _handle_collect(cmd: str, message: discord.Message) -> None:
@@ -1406,7 +1574,7 @@ async def _handle_collect(cmd: str, message: discord.Message) -> None:
         if not targets_file.exists():
             await message.channel.send(
                 f"_No `targets.txt` found for this guild.\n"
-                f"Create `Models/UserRecognition/0-Data/data/{guild_id}/targets.txt` "
+                f"Create `UserRecognition/0-Data/data/{guild_id}/targets.txt` "
                 "with one username or user ID per line (lines starting with `#` are comments)._"
             )
             return
@@ -1426,6 +1594,7 @@ async def _handle_collect(cmd: str, message: discord.Message) -> None:
     status = await message.channel.send("_Indexing server members..._")
     member_count = await _scan_members(message.guild, guild_id)
     identity     = _collect_history.load_identity(guild_id)
+    authors      = _collect_history.load_authors(guild_id)
     seen_ids     = _collect_history.load_seen_ids(guild_id)
     channels     = [channel_filter] if channel_filter else list(message.guild.text_channels)
     results: list[str] = []
@@ -1434,10 +1603,15 @@ async def _handle_collect(cmd: str, message: discord.Message) -> None:
         if multi:
             await status.edit(content=f"_Collecting {i}/{len(targets)}: {t_raw}..._")
 
-        target, err = await _resolve_collect_target(t_raw, message.guild, identity, member_count)
+        target, err = await _resolve_collect_target(
+            t_raw, message.guild, identity, member_count, authors
+        )
         if err:
             results.append(f"❌ `{t_raw}` — {err.strip('_')}")
             continue
+
+        # discord.Member only exists for current members; a User means they left.
+        departed = not isinstance(target, discord.Member)
 
         # Single-user: allow self-collection without Manage Messages.
         if not multi and not has_perm and invoker.id != target.id:
@@ -1447,7 +1621,10 @@ async def _handle_collect(cmd: str, message: discord.Message) -> None:
             return
 
         if not multi:
-            await status.edit(content=f"_Collecting messages from **{target.display_name}**..._")
+            note = " (no longer in this server)" if departed else ""
+            await status.edit(
+                content=f"_Collecting messages from **{target.display_name}**{note}..._"
+            )
 
         msg_found, msg_new, skipped, first_ts, last_ts = await _scan_user_channels(
             message.guild, guild_id, target.id, channels, since, limit, seen_ids, status,
@@ -1459,20 +1636,24 @@ async def _handle_collect(cmd: str, message: discord.Message) -> None:
             "guild_id":          guild_id,
             "username":          target.name,
             "display_name":      target.display_name,
+            "in_guild":          not departed,
             "message_count":     msg_found,
             "first_message_at":  first_ts or now_iso,
             "last_message_at":   last_ts  or now_iso,
             "last_collected_at": now_iso,
         }, guild_id)
         skip_note = f" ({len(skipped)} skipped)" if skipped else ""
-        results.append(f"✅ **{target.display_name}** — {msg_new} new / {msg_found} found{skip_note}")
+        left_note = " _(left server)_" if departed else ""
+        results.append(
+            f"✅ **{target.display_name}**{left_note} — {msg_new} new / {msg_found} found{skip_note}"
+        )
 
     header = "**Collection complete:**" if multi else f"**Collected: {targets[0]}**"
     await status.edit(content=header + "\n" + "\n".join(results))
 
 
 async def _handle_identify(text: str, message: discord.Message) -> None:
-    """Rank likely authors of text using the guild's trained authorship model."""
+    """Rank likely authors of text using the guild's trained user recognition model."""
     if message.guild is None:
         await message.channel.send("_`/identify` only works inside a server._")
         return
@@ -1489,7 +1670,7 @@ async def _handle_identify(text: str, message: discord.Message) -> None:
         results = _identify.identify(text, guild_id)
     except Exception as exc:
         logger.error("identify error: %s", exc)
-        await message.channel.send("_Error running authorship model — check logs._")
+        await message.channel.send("_Error running user recognition model — check logs._")
         return
 
     lines = [f"**Likely authors of:** _{text[:120]}{'…' if len(text) > 120 else ''}_"]
@@ -1541,9 +1722,12 @@ async def on_message(message):
             "      Supported: english, chinese, japanese, korean, french\n"
             "/prompt <message> — Ask the bot a question (conversation history is maintained per user)\n"
             "/history — Show your conversation history\n"
+            "/index [--channel #ch] [--since YYYY-MM-DD] [--limit N] — Index everyone who has posted "
+            "(run once; needed to reach users who have left)\n"
             "/collect @user [--channel #ch] [--since YYYY-MM-DD] [--limit N] — Save a user's message history\n"
+            "/collect \"Display Name\" — Quote names containing spaces\n"
             "/collect --batch — Collect all users listed in data/{guild_id}/targets.txt\n"
-            "/identify <text> — Rank likely authors of a message using the trained authorship model"
+            "/identify <text> — Rank likely senders of a message using the trained user recognition model"
         )
         return
 
@@ -1583,6 +1767,10 @@ async def on_message(message):
         await _handle_history(message.channel, message.author.id)
         return
 
+    if msg.startswith("/index"):
+        await _handle_index(msg[len("/index"):].strip(), message)
+        return
+
     if msg.startswith("/collect"):
         await _handle_collect(msg[len("/collect"):].strip(), message)
         return
@@ -1590,7 +1778,7 @@ async def on_message(message):
     if msg.startswith("/identify"):
         text = msg[len("/identify"):].strip()
         if not text:
-            await message.channel.send("_Usage: `/identify <text>` — rank likely authors of a message._")
+            await message.channel.send("_Usage: `/identify <text>` — rank likely senders of a message._")
         else:
             await _handle_identify(text, message)
         return
@@ -1598,9 +1786,15 @@ async def on_message(message):
     await message.channel.send("Unrecognized command. Type `/help` for a list of available commands.")
 
 
-# Token loaded from DISCORD_BOT_TOKEN in .env or environment
-bot_token = os.getenv("DISCORD_BOT_TOKEN")
-if not bot_token:
-    raise RuntimeError("DISCORD_BOT_TOKEN is not set. Add it to your .env file.")
+# Guarded so that importing this module does not connect to Discord. Without
+# the guard any import — a test, a REPL, a tooling check — starts a second live
+# bot that races the real one: both answer every command, and both append to the
+# same collection files, where the in-memory seen_ids dedup cannot see the other
+# process's writes.
+if __name__ == "__main__":
+    # Token loaded from DISCORD_BOT_TOKEN in .env or environment
+    bot_token = os.getenv("DISCORD_BOT_TOKEN")
+    if not bot_token:
+        raise RuntimeError("DISCORD_BOT_TOKEN is not set. Add it to your .env file.")
 
-client.run(bot_token, log_handler=None)
+    client.run(bot_token, log_handler=None)

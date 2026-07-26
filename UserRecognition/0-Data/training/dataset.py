@@ -1,4 +1,4 @@
-"""Build (text, label) training pairs from collected messages.jsonl.
+"""Build (text, label) training pairs from collected per-user message files.
 
 Usage:
     python dataset.py --guild GUILD_ID [--split 0.9] [--min-tokens 3] [--min-messages 20]
@@ -15,8 +15,7 @@ from pathlib import Path
 _DATA_ROOT = Path(__file__).parent.parent / "data"
 
 
-def _load_messages(guild_id: str) -> list[dict]:
-    p = _DATA_ROOT / str(guild_id) / "messages.jsonl"
+def _read_jsonl(p: Path) -> list[dict]:
     rows = []
     if not p.exists():
         return rows
@@ -30,6 +29,28 @@ def _load_messages(guild_id: str) -> list[dict]:
             except json.JSONDecodeError:
                 pass
     return rows
+
+
+def _load_messages_by_user(guild_id: str) -> dict[str, list[dict]]:
+    """Return {user_id: [messages]} from users/{user_id}.jsonl.
+
+    Falls back to a legacy messages.jsonl so an unmigrated guild still builds.
+    """
+    gdir  = _DATA_ROOT / str(guild_id)
+    users = gdir / "users"
+    by_user: dict[str, list[dict]] = {}
+    if users.is_dir():
+        for p in sorted(users.glob("*.jsonl")):
+            rows = _read_jsonl(p)
+            if rows:
+                by_user[p.stem] = rows
+        if by_user:
+            return by_user
+    for m in _read_jsonl(gdir / "messages.jsonl"):
+        uid = m.get("author_id", "")
+        if uid:
+            by_user.setdefault(uid, []).append(m)
+    return by_user
 
 
 def _load_users(guild_id: str) -> dict:
@@ -64,19 +85,13 @@ def build_dataset(
     Returns stats dict with keys: users, train, val, label_map.
     Writes train.jsonl and val.jsonl to the guild data directory.
     """
-    messages = _load_messages(guild_id)
     users = _load_users(guild_id)
 
-    # Filter by minimum token count
-    messages = [m for m in messages if m.get("token_count", 0) >= min_tokens]
-
-    # Group by author_id
-    by_user: dict[str, list[dict]] = {}
-    for m in messages:
-        uid = m.get("author_id", "")
-        if not uid:
-            continue
-        by_user.setdefault(uid, []).append(m)
+    # One file per user, so grouping is already done — just filter each.
+    by_user = {
+        uid: [m for m in msgs if m.get("token_count", 0) >= min_tokens]
+        for uid, msgs in _load_messages_by_user(guild_id).items()
+    }
 
     # Drop users with too few messages
     by_user = {uid: msgs for uid, msgs in by_user.items() if len(msgs) >= min_messages}
@@ -169,26 +184,17 @@ def list_guilds() -> None:
             continue
         gid = d.name
         name = guild_names.get(gid, gid)
-        msg_count = 0
-        user_ids: set = set()
-        mp = d / "messages.jsonl"
-        if mp.exists():
-            with mp.open(encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        r = json.loads(line)
-                        msg_count += 1
-                        user_ids.add(r.get("author_id"))
-                    except json.JSONDecodeError:
-                        pass
-        print(f"  {gid}  |  {name}  |  {msg_count} messages  |  {len(user_ids)} user(s)")
+        by_user   = _load_messages_by_user(gid)
+        msg_count = sum(len(v) for v in by_user.values())
+        usernames = _load_users(gid)
+        print(f"  {gid}  |  {name}  |  {msg_count} messages  |  {len(by_user)} user(s)")
+        for uid, msgs in sorted(by_user.items(), key=lambda kv: -len(kv[1])):
+            uname = usernames.get(uid) or (msgs[0].get("author_name", uid) if msgs else uid)
+            print(f"      {uname:<24} {len(msgs):>6} messages")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build authorship attribution dataset from collected messages.")
+    parser = argparse.ArgumentParser(description="Build user recognition dataset from collected messages.")
     sub = parser.add_subparsers(dest="cmd")
 
     build_p = sub.add_parser("build", help="Build train/val splits for a guild")
