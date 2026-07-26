@@ -96,10 +96,14 @@ CLIP_GRAD       = 1.0
 # ============================================================
 
 def _run(cmd: str, cwd: str = None, check: bool = True):
-    print(f"\n$ {cmd}")
+    print(f"\n$ {cmd}", flush=True)
     result = subprocess.run(cmd, shell=True, cwd=cwd)
-    if check and result.returncode != 0:
-        sys.exit(result.returncode)
+    if result.returncode != 0:
+        # Name the failing step. Without this the caller only ever saw the
+        # launcher's own exit 1, with no indication of which command produced it.
+        print(f"[error] Command failed (exit {result.returncode}): {cmd}", flush=True)
+        if check:
+            sys.exit(result.returncode)
     return result.returncode
 
 
@@ -143,20 +147,33 @@ def clone_or_update_repo():
 def install_deps():
     print("[setup] Checking / installing packages ...")
     # torch, torchvision, numpy, PIL, sklearn, tqdm are pre-installed on Colab.
-    _run("pip install -q wordninja lingua-language-detector")
+    # wordninja/lingua belong to the translation pipeline, not char_classifier —
+    # nothing under Models/OCR/ imports them. Non-fatal so a transient PyPI or
+    # resolver failure cannot abort a training run that does not need them.
+    if _run("pip install -q wordninja lingua-language-detector", check=False) != 0:
+        print("[setup] Warning: optional dep install failed — continuing "
+              "(char_classifier does not import these).")
 
 
 def sync_dataset():
     """
     Copy char-dataset from Drive to fast VM-local SSD.
-    Skipped if all required script subdirs already exist locally.
+    Skipped if all required script subdirs already exist locally and are populated.
     Prefers DATASET_ZIP; falls back to a plain directory at DRIVE_ROOT/char-dataset/.
     """
     local_root = Path(REPO_DIR) / "Models" / "Datasets" / "char-dataset"
     scripts_needed = (
         {"latin", "kana", "hangul", "cjk"} if "all" in SCRIPTS else set(SCRIPTS)
     )
-    if all((local_root / s).is_dir() for s in scripts_needed):
+
+    def _populated(script: str) -> bool:
+        # Existence alone is not enough: an extraction killed partway leaves the
+        # dir behind, and a bare is_dir() check would let the next run train on
+        # a fraction of the data without saying so.
+        d = local_root / script
+        return d.is_dir() and any(d.iterdir())
+
+    if all(_populated(s) for s in scripts_needed):
         print(f"[setup] Dataset already present at {local_root} — skipping sync.")
         return
 
@@ -164,7 +181,24 @@ def sync_dataset():
     if zip_path and zip_path.exists():
         print(f"[setup] Unzipping {zip_path} -> {local_root.parent} ...")
         local_root.parent.mkdir(parents=True, exist_ok=True)
-        _run(f"unzip -q {shlex.quote(str(zip_path))} -d {shlex.quote(str(local_root.parent))}")
+        # unzip exits 1 for *warnings* (extra leading bytes, attribute set
+        # failures on a FUSE mount) even when every entry extracted fine. Taking
+        # that as fatal aborted the first run of each session; the retry then
+        # skipped this step entirely because the script dirs already existed —
+        # the "fails once, works on the second attempt" pattern. Judge success by
+        # what landed on disk instead.
+        rc = _run(
+            f"unzip -q -o {shlex.quote(str(zip_path))} -d {shlex.quote(str(local_root.parent))}",
+            check=False,
+        )
+        missing = sorted(s for s in scripts_needed if not _populated(s))
+        if missing:
+            print(f"\n[setup] ERROR: unzip exited {rc} and these script dirs are "
+                  f"missing under {local_root}: {missing}")
+            sys.exit(1)
+        if rc != 0:
+            print(f"[setup] unzip exited {rc} (warnings only) — all required "
+                  f"script dirs present, continuing.")
     else:
         drive_dir = Path(DRIVE_ROOT) / "char-dataset"
         if drive_dir.exists():
