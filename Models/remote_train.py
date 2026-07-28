@@ -188,7 +188,7 @@ def sync_dataset():
         # the "fails once, works on the second attempt" pattern. Judge success by
         # what landed on disk instead.
         rc = _run(
-            f"unzip -q -o {shlex.quote(str(zip_path))} -d {shlex.quote(str(local_root.parent))}",
+            f"unzip -q -o -O utf-8 {shlex.quote(str(zip_path))} -d {shlex.quote(str(local_root.parent))}",
             check=False,
         )
         missing = sorted(s for s in scripts_needed if not _populated(s))
