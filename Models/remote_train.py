@@ -24,7 +24,6 @@ Bootstrap (paste into a fresh Colab terminal before the repo is cloned):
 
 import argparse
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -126,7 +125,7 @@ def mount_drive():
         print("[setup] Drive already mounted.")
         return
     if not _in_colab():
-        print("[setup] Not in Colab — skipping Drive mount.")
+        print("[setup] Not in Colab - skipping Drive mount.")
         return
     from google.colab import drive
     drive.mount("/content/drive")
@@ -134,7 +133,7 @@ def mount_drive():
 
 def clone_or_update_repo():
     if (Path(REPO_DIR) / ".git").exists():
-        print(f"[setup] Repo exists at {REPO_DIR} — pulling latest.")
+        print(f"[setup] Repo exists at {REPO_DIR} - pulling latest.")
         _run(f"git -C {REPO_DIR} pull --ff-only")
     else:
         print(f"[setup] Cloning {REPO_URL} -> {REPO_DIR}")
@@ -151,7 +150,7 @@ def install_deps():
     # nothing under Models/OCR/ imports them. Non-fatal so a transient PyPI or
     # resolver failure cannot abort a training run that does not need them.
     if _run("pip install -q wordninja lingua-language-detector", check=False) != 0:
-        print("[setup] Warning: optional dep install failed — continuing "
+        print("[setup] Warning: optional dep install failed - continuing "
               "(char_classifier does not import these).")
 
 
@@ -174,31 +173,36 @@ def sync_dataset():
         return d.is_dir() and any(d.iterdir())
 
     if all(_populated(s) for s in scripts_needed):
-        print(f"[setup] Dataset already present at {local_root} — skipping sync.")
+        print(f"[setup] Dataset already present at {local_root} - skipping sync.")
         return
 
     zip_path = Path(DATASET_ZIP) if DATASET_ZIP else None
     if zip_path and zip_path.exists():
-        print(f"[setup] Unzipping {zip_path} -> {local_root.parent} ...")
+        print(f"[setup] Extracting {zip_path} -> {local_root.parent} ...")
         local_root.parent.mkdir(parents=True, exist_ok=True)
-        # unzip exits 1 for *warnings* (extra leading bytes, attribute set
-        # failures on a FUSE mount) even when every entry extracted fine. Taking
-        # that as fatal aborted the first run of each session; the retry then
-        # skipped this step entirely because the script dirs already existed —
-        # the "fails once, works on the second attempt" pattern. Judge success by
-        # what landed on disk instead.
-        rc = _run(
-            f"unzip -q -o -O utf-8 {shlex.quote(str(zip_path))} -d {shlex.quote(str(local_root.parent))}",
-            check=False,
-        )
+        # Extracted with Python's zipfile, not the unzip binary. zip_dataset()
+        # writes this archive, and entry names carry non-ASCII font names (Korean
+        # "맑은 고딕" and similar). unzip compares each entry's local-header name
+        # against the central-directory name, reports a mismatch for every one of
+        # them, and exits 1 — after extracting the file correctly. That exit code
+        # aborted the first run of every session; the retry then skipped this step
+        # because the script dirs already existed, which is why it "worked the
+        # second time". zipfile reads the central directory only, so the whole
+        # warning class disappears. It also drops the dependency on an external
+        # unzip binary, matching how cell 2 already extracts on Kaggle.
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            for i, name in enumerate(names, 1):
+                zf.extract(name, local_root.parent)
+                if i % 10000 == 0:
+                    print(f"  {i}/{len(names)} files ...", flush=True)
+        print(f"[setup] Extracted {len(names)} files.")
+
         missing = sorted(s for s in scripts_needed if not _populated(s))
         if missing:
-            print(f"\n[setup] ERROR: unzip exited {rc} and these script dirs are "
-                  f"missing under {local_root}: {missing}")
+            print(f"\n[setup] ERROR: extraction finished but these script dirs "
+                  f"are missing under {local_root}: {missing}")
             sys.exit(1)
-        if rc != 0:
-            print(f"[setup] unzip exited {rc} (warnings only) — all required "
-                  f"script dirs present, continuing.")
     else:
         drive_dir = Path(DRIVE_ROOT) / "char-dataset"
         if drive_dir.exists():
@@ -351,7 +355,7 @@ def train(resume: bool, smoke_test: bool, sync_to: str = None):
             _print_checkpoint_info(last_pt)
             cmd += ["--resume", str(last_pt)]
         else:
-            print(f"[train] --resume requested but {last_pt} not found — starting fresh.")
+            print(f"[train] --resume requested but {last_pt} not found - starting fresh.")
 
     print(f"\n[train] Working dir : {ocr_dir}")
     print(f"[train] Command     :\n  " + " ".join(str(c) for c in cmd) + "\n")
@@ -385,7 +389,7 @@ def _print_checkpoint_info(path: Path):
         print(f"[train] Resuming from {path}")
         print(f"  Epoch      : {epoch} / {meta.get('total_epochs', '?')}"
               f"  ({meta.get('epochs_remaining', '?')} remaining)")
-        print(f"  Phase      : {meta.get('phase', '?')} — {meta.get('phase_label', '')}")
+        print(f"  Phase      : {meta.get('phase', '?')} - {meta.get('phase_label', '')}")
         print(f"  Val acc    : {vacc:.4f}  (best: {meta.get('best_val_acc', vacc):.4f})")
         print(f"  Scripts    : {meta.get('scripts', '?')}")
         print(f"  Backbone   : {meta.get('backbone', '?')}")
