@@ -2,17 +2,22 @@
 ocr_pipeline.py — CRAFT detection + script-routed recognition.
 
 Script routing per detected region:
-  Hangul   → EasyOCR Korean reader  (easyocr, already in requirements)
-  CJK/Kana → manga-ocr              (pip install manga-ocr)
-  Latin    → EasyOCR English        (word/line crops)
-           → char_classifier        (single-char crops, when checkpoint present)
+  Latin    → manga-ocr → fullwidth check → char_classifier (checkpoint req.)
+                                         → EasyOCR English fallback
+  Hangul   → EasyOCR Korean reader
+  CJK/Kana → manga-ocr; post-hoc Hangul check re-routes to EasyOCR Korean
 
-manga-ocr output is checked post-hoc: if Hangul appears in the result the crop
-is re-run through EasyOCR Korean, which is better calibrated for that script.
+Latin routing detail: _screen_script() is a v1 stub — it returns 'cjk_or_hangul'
+for all crops.  Latin crops are identified post-hoc: manga-ocr returns fullwidth
+Latin (U+FF01–U+FF5E) for Latin text; after normalizing, latin_fraction > 0.6
+triggers char_clf, with EasyOCR English as fallback when char_clf is absent or
+avg_conf < 0.5.  A trained script pre-classifier would allow bypassing manga-ocr
+entirely for Latin crops, but pixel-level gap analysis fails at Discord font sizes
+(16–22 px) because CJK anti-aliasing and Latin spacing produce overlapping gap
+fractions.
 
-char_classifier is not used in the main recognize() pipeline (CRAFT returns
-word-level boxes; char_classifier expects single isolated characters). It is
-exposed as recognize_char() for use after a character segmentation step.
+Korean is a known v1 limitation — manga-ocr maps Korean to Japanese when
+Hangul is not present in its output; a dedicated Hangul pre-screen would fix this.
 
 Run from OCR/:
     python -m ocr_pipeline --image screenshot.png
@@ -42,7 +47,7 @@ _KANA_RE   = re.compile(r'[぀-ヿ]')
 _CJK_RE    = re.compile(r'[　-鿿豈-﫿]')
 _LATIN_RE  = re.compile(r'[A-Za-zÀ-ɏ]')
 
-_DEFAULT_CHAR_CKPT = str(Path(__file__).parent / 'checkpoints' / 'best.pt')
+_CKPT_DIR = Path(__file__).parent / 'checkpoints'
 
 # ---------------------------------------------------------------------------
 # Lazy-loaded model handles
@@ -50,8 +55,7 @@ _DEFAULT_CHAR_CKPT = str(Path(__file__).parent / 'checkpoints' / 'best.pt')
 _manga_ocr_model = None
 _easyocr_ko      = None
 _easyocr_en      = None
-_char_clf        = None
-_char_clf_names  = None
+_char_clf_cache: dict = {}  # script → (model, class_names)
 
 
 # ---------------------------------------------------------------------------
@@ -112,18 +116,15 @@ def _normalize_fullwidth(text: str) -> str:
 
 def _screen_script(crop: Image.Image) -> str:
     """
-    Fast pixel-level script pre-screen.
+    Pixel-level script pre-screen — v1 stub, always returns 'cjk_or_hangul'.
 
-    At Discord font sizes (16–22 px), CC geometry does not reliably distinguish
-    Latin from CJK/Hangul: Hangul jamo strokes and Latin letters produce
-    overlapping aspect-ratio distributions.  The correct approach requires a
-    small trained script classifier; that is left as a future improvement.
-
-    For v1 this function always returns 'cjk_or_hangul' so every crop runs
-    through manga-ocr.  The fullwidth post-hoc check in recognize_crop()
-    detects and re-routes Latin crops to EasyOCR English.  Korean crops are a
-    known v1 limitation — manga-ocr maps them to Japanese (see docstring on
-    recognize_crop).
+    Column-projection gap analysis was tried but fails at Discord font sizes
+    (16–22 px): CJK anti-aliased strokes produce gap fractions (0.48–0.50)
+    that overlap with Latin words (0.32–0.58), so no single threshold separates
+    them.  The reliable Latin trigger is the fullwidth post-hoc check in
+    recognize_crop(), which fires after manga-ocr has already confirmed the
+    crop contains Latin text.  A trained lightweight script classifier would be
+    a more effective replacement.
     """
     return 'cjk_or_hangul'
 
@@ -165,31 +166,103 @@ def _load_easyocr_en():
     return _easyocr_en
 
 
-def _load_char_clf(device=None):
-    """Load char_classifier if checkpoint exists. Returns (model, class_names) or (None, None)."""
-    global _char_clf, _char_clf_names
-    if _char_clf is not None:
-        return _char_clf, _char_clf_names
+def _load_char_clf(script: str, device=None):
+    """Load per-script char_classifier if checkpoint exists. Returns (model, class_names) or (None, None)."""
+    global _char_clf_cache
+    if script in _char_clf_cache:
+        return _char_clf_cache[script]
 
-    ckpt = Path(_DEFAULT_CHAR_CKPT)
-    names_file = ckpt.parent / 'class_names.json'
+    ckpt       = _CKPT_DIR / script / 'best.pt'
+    names_file = _CKPT_DIR / script / 'class_names.json'
+    cfg_file   = _CKPT_DIR / script / 'config.json'
     if not ckpt.exists() or not names_file.exists():
+        _char_clf_cache[script] = (None, None)
         return None, None
 
     import json, torch
     from char_classifier.model_builder import create_model
     from char_classifier.utils import get_device, load_checkpoint
 
+    backbone = 'dinov2_vits14'
+    if cfg_file.exists():
+        backbone = json.load(open(cfg_file)).get('backbone', backbone)
+
     device = device or get_device()
     names  = json.load(open(names_file))
-    model  = create_model('dinov2_vits14', num_classes=len(names), freeze_base=False)
+    model  = create_model(backbone, num_classes=len(names), freeze_base=False)
     model  = model.to(device)
     load_checkpoint(str(ckpt), model, device=device)
     model.eval()
-    _char_clf       = model
-    _char_clf_names = names
-    print(f'[ocr_pipeline] char_classifier loaded ({len(names)} classes)')
-    return _char_clf, _char_clf_names
+    _char_clf_cache[script] = (model, names)
+    print(f'[ocr_pipeline] char_classifier/{script} loaded ({len(names)} classes, {backbone})')
+    return model, names
+
+
+# ---------------------------------------------------------------------------
+# char_classifier helpers
+# ---------------------------------------------------------------------------
+
+def _label_to_char(label: str) -> str:
+    """
+    Convert a char_classifier class label to its Unicode character.
+
+    Latin dataset uses prefix_char notation:
+        cap_A → 'A',  low_a → 'a',  dig_0 → '0'
+    All other scripts use prefix_HHHH hex codepoints:
+        hira_304a → chr(0x304a),  kata_30ab → chr(0x30ab),  cjk_4e00 → chr(0x4e00)
+    """
+    parts = label.split('_', 1)
+    if len(parts) < 2:
+        return label
+    prefix, rest = parts
+    if prefix in ('cap', 'low', 'dig'):
+        return rest
+    try:
+        return chr(int(rest, 16))
+    except ValueError:
+        return label
+
+
+def _run_char_clf_word(
+    crop: Image.Image,
+    script: str,
+    device=None,
+) -> tuple[str, float]:
+    """
+    Segment a word crop into individual characters and classify each via char_classifier.
+
+    Returns (text, avg_confidence).  Returns ('', 0.0) if checkpoint is absent.
+    """
+    import torch
+    from torchvision import transforms
+    from char_classifier.segment import split_into_chars
+
+    clf, names = _load_char_clf(script, device)
+    if clf is None:
+        return '', 0.0
+
+    tf = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
+
+    char_crops = split_into_chars(crop.convert('RGB'))
+    if not char_crops:
+        return '', 0.0
+
+    chars, confs = [], []
+    with torch.inference_mode():
+        for cc in char_crops:
+            tensor = tf(cc.convert('RGB')).unsqueeze(0)
+            if device:
+                tensor = tensor.to(device)
+            probs = torch.softmax(clf(tensor), dim=1)[0]
+            idx   = int(probs.argmax())
+            chars.append(_label_to_char(names[idx]))
+            confs.append(round(float(probs[idx]), 4))
+
+    return ''.join(chars), round(sum(confs) / len(confs), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +321,9 @@ def recognize_crop(
     hint = script_hint or _screen_script(crop)
 
     if hint == 'latin':
+        text, conf = _run_char_clf_word(crop, 'latin')
+        if text and conf >= 0.5:
+            return Recognition(text, conf, 'latin', 'char-clf')
         text, conf = _run_easyocr_en(crop)
         return Recognition(text, conf, 'latin', 'easyocr-en')
 
@@ -263,6 +339,9 @@ def recognize_crop(
     # Latin.  Normalize and re-route to EasyOCR English for better accuracy.
     normalized = _normalize_fullwidth(text)
     if _latin_fraction(normalized) > 0.6:
+        clf_text, clf_conf = _run_char_clf_word(crop, 'latin')
+        if clf_text and clf_conf >= 0.5:
+            return Recognition(clf_text, clf_conf, 'latin', 'char-clf')
         text, conf = _run_easyocr_en(crop)
         return Recognition(text, conf, 'latin', 'easyocr-en')
 
@@ -284,6 +363,7 @@ def recognize_crop(
 
 def recognize_char(
     crop: Image.Image,
+    script: str = 'latin',
     device=None,
     top_k: int = 1,
 ) -> list[tuple[str, float]]:
@@ -300,7 +380,7 @@ def recognize_char(
     import torch
     from torchvision import transforms
 
-    clf, names = _load_char_clf(device)
+    clf, names = _load_char_clf(script, device)
     if clf is None:
         # No checkpoint — fall back to full-crop recognizer
         r = recognize_crop(crop)

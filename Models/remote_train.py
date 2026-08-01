@@ -86,8 +86,9 @@ BATCH_SIZE      = 64
 BACKBONE        = "dinov2_vits14"  # dinov2_vits14 | dinov2_vitb14 | convnext_tiny
 GRID_MODE       = "all"            # single | rotated | all
 MIXUP_ALPHA     = 0.2              # 0.4 caused persistent train<val gap; 0.2 is gentler
-SCHEDULER       = "cosine-warm"    # cosine | cosine-warm | none
+SCHEDULER       = "cosine"         # cosine | cosine-warm | none
 CLIP_GRAD       = 1.0
+LR              = 1e-3             # head LR; backbone uses LR * 0.1
 
 
 # ============================================================
@@ -338,6 +339,7 @@ def train(resume: bool, smoke_test: bool, sync_to: str = None):
         "--mixup-alpha",    str(MIXUP_ALPHA),
         "--scheduler",      SCHEDULER,
         "--clip-grad",      str(CLIP_GRAD),
+        "--lr",             str(LR),
         "--checkpoint-dir", CKPT_DIR,
         "--no-tensorboard",
     ]
@@ -434,7 +436,9 @@ def parse_args():
                    help="Override MIXUP_ALPHA (default 0.2)")
     p.add_argument("--scheduler",      default=None,
                    choices=["cosine", "cosine-warm", "none"],
-                   help="Override SCHEDULER (default cosine-warm)")
+                   help="Override SCHEDULER (default cosine)")
+    p.add_argument("--lr",             type=float, default=None,
+                   help="Override LR (head learning rate; backbone = LR * 0.1; default 1e-3)")
     p.add_argument("--storage-root",  default=None,
                    help="Override DRIVE_ROOT for checkpoints and dataset zip "
                         "(Lightning AI: /teamspace/studios/this_studio/TL-Bot)")
@@ -452,7 +456,7 @@ def main():
 
     # Apply CLI overrides before anything reads these globals.
     global SCRIPTS, EPOCHS, CKPT_DIR, DRIVE_ROOT, DATASET_ZIP, REPO_DIR
-    global FREEZE_EPOCHS, MIXUP_ALPHA, SCHEDULER
+    global FREEZE_EPOCHS, MIXUP_ALPHA, SCHEDULER, LR
     if args.storage_root is not None:
         DRIVE_ROOT  = args.storage_root
         DATASET_ZIP = f"{DRIVE_ROOT}/char-dataset.zip"
@@ -468,6 +472,8 @@ def main():
         MIXUP_ALPHA = args.mixup_alpha
     if args.scheduler is not None:
         SCHEDULER = args.scheduler
+    if args.lr is not None:
+        LR = args.lr
     CKPT_DIR = _make_ckpt_dir(SCRIPTS)
 
     print("=" * 60)
