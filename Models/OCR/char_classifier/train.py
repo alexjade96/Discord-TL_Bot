@@ -201,23 +201,28 @@ def main():
     current_optimizer = [optimizer]
 
     # Seed history from a prior run's progress.json so curves.png covers the full run.
+    # Only when actually resuming — otherwise a fresh run (start_epoch=0) re-appends
+    # epoch 1..N under numbers a prior run already used, duplicating history entries
+    # and leaving best_epoch/epochs_since_best computed against a run this one isn't
+    # continuing.
     _progress_path = ckpt_dir / 'progress.json'
-    try:
-        _prior = json.loads(_progress_path.read_text())
-        _epoch_log: list = _prior.get('history', [])
-        for _e in _epoch_log:
-            for k in all_results:
-                if k in _e:
-                    all_results[k].append(_e[k])
-        if _epoch_log:
-            _best = max(_epoch_log, key=lambda e: e.get(_sel, 0.0))
-            _best_epoch_ref = [_best.get('epoch', start_epoch)]
-            best_score_ref  = [_best.get(_sel, best_val_acc)]
-        else:
+    _epoch_log: list = []
+    _best_epoch_ref = [start_epoch]
+    if args.resume:
+        try:
+            _prior = json.loads(_progress_path.read_text())
+            _epoch_log = _prior.get('history', [])
+            for _e in _epoch_log:
+                for k in all_results:
+                    if k in _e:
+                        all_results[k].append(_e[k])
+            if _epoch_log:
+                _best = max(_epoch_log, key=lambda e: e.get(_sel, 0.0))
+                _best_epoch_ref = [_best.get('epoch', start_epoch)]
+                best_score_ref  = [_best.get(_sel, best_val_acc)]
+        except Exception:
+            _epoch_log = []
             _best_epoch_ref = [start_epoch]
-    except Exception:
-        _epoch_log = []
-        _best_epoch_ref = [start_epoch]
 
     _t_ref = [time.monotonic()]
 
