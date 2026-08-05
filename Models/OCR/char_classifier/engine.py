@@ -1,3 +1,5 @@
+import json
+import time
 from typing import Dict, List
 
 import numpy as np
@@ -11,6 +13,29 @@ def _topk_correct(logits: torch.Tensor, targets: torch.Tensor, k: int) -> int:
     return topk.eq(targets.unsqueeze(1)).any(dim=1).sum().item()
 
 
+def _gpu_mem_mb(device):
+    if device.type != 'cuda':
+        return None, None
+    alloc    = torch.cuda.memory_allocated(device) / (1024 ** 2)
+    reserved = torch.cuda.memory_reserved(device) / (1024 ** 2)
+    return round(alloc, 1), round(reserved, 1)
+
+
+def _write_heartbeat(path, payload):
+    """Best-effort progress snapshot for diagnosing mid-epoch deaths (crash, OOM,
+    disconnect) that leave no trace, since last.pt/progress.json only update at
+    epoch end. Never allowed to affect training: any failure here is swallowed."""
+    if path is None:
+        return
+    try:
+        from datetime import datetime
+        tmp = path.with_suffix('.tmp')
+        tmp.write_text(json.dumps({**payload, 'saved_at': datetime.now().isoformat(timespec='seconds')}, indent=2))
+        tmp.replace(path)
+    except Exception:
+        pass
+
+
 def _mixup_batch(x: torch.Tensor, y: torch.Tensor, alpha: float):
     lam  = np.random.beta(alpha, alpha)
     idx  = torch.randperm(x.size(0), device=x.device)
@@ -18,11 +43,15 @@ def _mixup_batch(x: torch.Tensor, y: torch.Tensor, alpha: float):
 
 
 def train_step(model, loader, loss_fn, optimizer, device,
-               mixup_alpha: float = 0.0, clip_grad: float = 1.0):
+               mixup_alpha: float = 0.0, clip_grad: float = 1.0,
+               heartbeat_path=None, heartbeat_interval: float = 60.0,
+               heartbeat_meta: dict = None):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
     total_gnorm = 0.0
-    for X, y in tqdm(loader, leave=False, desc='  train'):
+    n_batches   = len(loader)
+    _t0, _t_last_hb = time.monotonic(), 0.0
+    for i, (X, y) in enumerate(tqdm(loader, leave=False, desc='  train'), start=1):
         X, y = X.to(device), y.to(device)
         optimizer.zero_grad()
 
@@ -44,17 +73,34 @@ def train_step(model, loader, loss_fn, optimizer, device,
         total_loss += loss.item() * len(y)
         total      += len(y)
 
-    n_batches = len(loader)
+        _now = time.monotonic()
+        if heartbeat_path is not None and (_now - _t_last_hb) >= heartbeat_interval:
+            _alloc_mb, _reserved_mb = _gpu_mem_mb(device)
+            _write_heartbeat(heartbeat_path, {
+                **(heartbeat_meta or {}),
+                'phase_name':       'train',
+                'batch':            i,
+                'total_batches':    n_batches,
+                'elapsed_secs':     round(_now - _t0, 1),
+                'gpu_mem_alloc_mb': _alloc_mb,
+                'gpu_mem_reserved_mb': _reserved_mb,
+            })
+            _t_last_hb = _now
+
     return total_loss / total, correct / total, total_gnorm / n_batches if n_batches else 0.0
 
 
-def eval_step(model, loader, loss_fn, device):
+def eval_step(model, loader, loss_fn, device,
+             heartbeat_path=None, heartbeat_interval: float = 60.0,
+             heartbeat_meta: dict = None):
     from sklearn.metrics import f1_score, precision_score, recall_score
     model.eval()
     total_loss, correct, top3, top5, total = 0.0, 0, 0, 0, 0
     all_preds, all_labels = [], []
+    n_batches = len(loader)
+    _t0, _t_last_hb = time.monotonic(), 0.0
     with torch.inference_mode():
-        for X, y in tqdm(loader, leave=False, desc='  eval'):
+        for i, (X, y) in enumerate(tqdm(loader, leave=False, desc='  eval'), start=1):
             X, y   = X.to(device), y.to(device)
             logits = model(X)
             loss   = loss_fn(logits, y)
@@ -66,6 +112,20 @@ def eval_step(model, loader, loss_fn, device):
             total      += len(y)
             all_preds.extend(preds.cpu().tolist())
             all_labels.extend(y.cpu().tolist())
+
+            _now = time.monotonic()
+            if heartbeat_path is not None and (_now - _t_last_hb) >= heartbeat_interval:
+                _alloc_mb, _reserved_mb = _gpu_mem_mb(device)
+                _write_heartbeat(heartbeat_path, {
+                    **(heartbeat_meta or {}),
+                    'phase_name':       'eval',
+                    'batch':            i,
+                    'total_batches':    n_batches,
+                    'elapsed_secs':     round(_now - _t0, 1),
+                    'gpu_mem_alloc_mb': _alloc_mb,
+                    'gpu_mem_reserved_mb': _reserved_mb,
+                })
+                _t_last_hb = _now
     v_prec = precision_score(all_labels, all_preds, average='macro', zero_division=0)
     v_rec  = recall_score(all_labels,   all_preds, average='macro', zero_division=0)
     v_f1   = f1_score(all_labels,       all_preds, average='macro', zero_division=0)
@@ -77,6 +137,7 @@ def train_loop(
     epochs: int, device, writer=None, epoch_offset: int = 0,
     mixup_alpha: float = 0.0, clip_grad: float = 1.0,
     scheduler=None, on_epoch_end=None,
+    heartbeat_path=None, heartbeat_interval: float = 60.0,
 ) -> Dict[str, List]:
     results = {
         'train_loss': [], 'train_acc': [],
@@ -88,8 +149,12 @@ def train_loop(
     for epoch in range(1, epochs + 1):
         g = epoch + epoch_offset
         t_loss, t_acc, t_gnorm                         = train_step(model, train_loader, loss_fn, optimizer, device,
-                                                                     mixup_alpha=mixup_alpha, clip_grad=clip_grad)
-        v_loss, v_acc, v_top3, v_top5, v_prec, v_rec, v_f1 = eval_step(model, val_loader, loss_fn, device)
+                                                                     mixup_alpha=mixup_alpha, clip_grad=clip_grad,
+                                                                     heartbeat_path=heartbeat_path, heartbeat_interval=heartbeat_interval,
+                                                                     heartbeat_meta={'epoch': g})
+        v_loss, v_acc, v_top3, v_top5, v_prec, v_rec, v_f1 = eval_step(model, val_loader, loss_fn, device,
+                                                                     heartbeat_path=heartbeat_path, heartbeat_interval=heartbeat_interval,
+                                                                     heartbeat_meta={'epoch': g})
         _lr = optimizer.param_groups[-1]['lr']
 
         results['train_loss'].append(t_loss)

@@ -90,6 +90,10 @@ def parse_args():
                    help='Resume from last.pt or best.pt. Pass the same --epochs as the '
                         'original run so the phase boundary and scheduler position are correct.')
     p.add_argument('--no-tensorboard',   action='store_true')
+    p.add_argument('--heartbeat-interval', type=float, default=60.0,
+                   help='Seconds between mid-epoch heartbeat.json writes to checkpoint-dir '
+                        '(batch progress + GPU memory), for diagnosing mid-epoch deaths that '
+                        'leave no trace in last.pt/progress.json (default 60; 0 disables)')
     return p.parse_args()
 
 
@@ -230,6 +234,8 @@ def main():
                 if k in _e:
                     all_results[k].append(_e[k])
 
+    _heartbeat_path = (ckpt_dir / 'heartbeat.json') if args.heartbeat_interval > 0 else None
+
     _t_ref = [time.monotonic()]
 
     def on_epoch_end(g, v_acc, metrics=None):
@@ -332,6 +338,7 @@ def main():
                     epoch_offset=start_epoch,
                     mixup_alpha=args.mixup_alpha, clip_grad=args.clip_grad,
                     on_epoch_end=on_epoch_end,
+                    heartbeat_path=_heartbeat_path, heartbeat_interval=args.heartbeat_interval,
                 )
                 for k in all_results:
                     all_results[k].extend(results[k])
@@ -374,6 +381,7 @@ def main():
                     epoch_offset=p2_start,
                     mixup_alpha=args.mixup_alpha, clip_grad=args.clip_grad,
                     scheduler=scheduler, on_epoch_end=on_epoch_end,
+                    heartbeat_path=_heartbeat_path, heartbeat_interval=args.heartbeat_interval,
                 )
                 for k in all_results:
                     all_results[k].extend(results[k])
