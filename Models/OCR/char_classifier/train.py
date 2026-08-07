@@ -217,11 +217,25 @@ def main():
     # each session, and best.pt must keep the best-ever result across restarts
     # rather than being overwritten by this run's own first, still-untrained
     # epoch beating an initial best_score_ref of 0.
-    if _prior_history:
-        _prior_best = max(_prior_history, key=lambda e: e.get(_sel, 0.0))
-        if _prior_best.get(_sel, 0.0) > best_score_ref[0]:
-            best_score_ref  = [_prior_best.get(_sel, best_val_acc)]
-            _best_epoch_ref = [_prior_best.get('epoch', start_epoch)]
+    #
+    # Read the floor from best.pt itself, not from progress.json's history: a
+    # session disconnect + notebook re-run mid-run overwrites progress.json with
+    # that restart's own (still-early) history before this code ever runs again,
+    # so a history-based floor silently resets and lets a worse run overwrite a
+    # better best.pt (this happened to Latin on 2026-08-07 — epoch 9's 0.576 was
+    # lost this way). best.pt is the one file guaranteed to still hold the real
+    # best-ever score no matter how progress.json was reset.
+    _best_pt_path = ckpt_dir / 'best.pt'
+    if _best_pt_path.exists():
+        try:
+            _prior_ckpt  = torch.load(_best_pt_path, map_location='cpu', weights_only=False)
+            _prior_meta  = _prior_ckpt.get('meta', {})
+            _prior_score = _prior_meta.get('best_score', _prior_ckpt.get('val_acc', 0.0))
+            if _prior_score > best_score_ref[0]:
+                best_score_ref[0]  = _prior_score
+                _best_epoch_ref[0] = _prior_meta.get('best_epoch', _prior_ckpt.get('epoch', start_epoch))
+        except Exception as e:
+            print(f'[train] Warning: could not read prior best.pt for score protection: {e}')
 
     # Seed the logged history only when actually resuming — otherwise a fresh
     # run's epoch numbers collide with a prior run's and duplicate progress.json's

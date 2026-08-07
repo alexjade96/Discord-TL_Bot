@@ -81,13 +81,18 @@ def _make_ckpt_dir(scripts: list) -> str:
 
 CKPT_DIR = _make_ckpt_dir(SCRIPTS)
 FREEZE_EPOCHS   = 3                # head-only warm-up epochs before backbone fine-tune
-UNFREEZE_BLOCKS = 2                # 4 caused an early-plateau pattern on Latin (val_acc
-                                    # peaked epoch 9, never recovered over 25 epochs even
-                                    # as LR decayed) -- smaller unfreeze is gentler on the
-                                    # pretrained backbone at the unfreeze transition.
+UNFREEZE_BLOCKS = 4                # reverted from 2 -- that run (LR 1e-4 + unfreeze 2)
+                                    # converged much slower than UNFREEZE_BLOCKS=4 did, so
+                                    # it wasn't isolating anything useful. See GRID_MODE.
 BATCH_SIZE      = 64
 BACKBONE        = "dinov2_vits14"  # dinov2_vits14 | dinov2_vitb14 | convnext_tiny
-GRID_MODE       = "all"            # single | rotated | all
+GRID_MODE       = "single"         # single | rotated | all -- "all" includes grid rotation
+                                    # variants that rotate the focus glyph itself (90/180/270deg),
+                                    # which turns rotation-ambiguous Latin letters into each
+                                    # other (b<->q, d<->p, n<->u, 6<->9, M<->W) while keeping
+                                    # the original label -- contradictory supervision, likely
+                                    # cause of Latin's early plateau (val_acc peaked epoch 9
+                                    # then never recovered). "single" drops all grid rotation.
 MIXUP_ALPHA     = 0.2              # 0.4 caused persistent train<val gap; 0.2 is gentler
 SCHEDULER       = "cosine"         # cosine | cosine-warm | none
 CLIP_GRAD       = 1.0
