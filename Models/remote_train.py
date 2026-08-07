@@ -81,7 +81,10 @@ def _make_ckpt_dir(scripts: list) -> str:
 
 CKPT_DIR = _make_ckpt_dir(SCRIPTS)
 FREEZE_EPOCHS   = 3                # head-only warm-up epochs before backbone fine-tune
-UNFREEZE_BLOCKS = 4
+UNFREEZE_BLOCKS = 2                # 4 caused an early-plateau pattern on Latin (val_acc
+                                    # peaked epoch 9, never recovered over 25 epochs even
+                                    # as LR decayed) -- smaller unfreeze is gentler on the
+                                    # pretrained backbone at the unfreeze transition.
 BATCH_SIZE      = 64
 BACKBONE        = "dinov2_vits14"  # dinov2_vits14 | dinov2_vitb14 | convnext_tiny
 GRID_MODE       = "all"            # single | rotated | all
