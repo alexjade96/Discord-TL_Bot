@@ -6,6 +6,8 @@
 #   python -m char_classifier.train --resume checkpoints/latin/last.pt --epochs 30
 import argparse
 import json
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -35,6 +37,23 @@ _DATASET_ROOT = _HERE.parent.parent / 'Datasets' / 'char-dataset'
 _DEFAULT_CKPTS = str(_HERE.parent / 'checkpoints')
 
 _SCRIPT_NAMES = ('latin', 'kana', 'hangul', 'cjk')
+
+# Fields compared to decide whether a checkpoint dir's existing files were
+# produced by a different training plan and should be archived rather than
+# silently overwritten/mixed with the new run. Excludes pure-infra args
+# (checkpoint_dir, num_workers, no_tensorboard, heartbeat_interval, resume)
+# that don't affect the trained result. Kept alongside the file each of
+# these already lives in (config.json), rather than a separate file.
+_SIGNATURE_KEYS = (
+    'backbone', 'scripts', 'epochs', 'freeze_epochs', 'scheduler', 'mixup_alpha',
+    'unfreeze_blocks', 'batch_size', 'lr', 'augment', 'grid_mode', 'clip_grad',
+    'select_metric', 'max_per_class', 'min_per_class', 'seed', 'weighted_sampler',
+)
+
+# Top-level checkpoint-dir contents an archive sweeps up; 'runs/' (TensorBoard
+# logs) is handled separately since it's a directory, not a file.
+_ARCHIVE_FILES = ('last.pt', 'best.pt', 'progress.json', 'config.json',
+                  'class_names.json', 'curves.png', 'heartbeat.json')
 
 
 def parse_args():
@@ -97,6 +116,144 @@ def parse_args():
     return p.parse_args()
 
 
+def _git_commit_hash() -> str:
+    """Short commit hash of the checked-out code, or 'unknown'. Catches plan
+    changes that aren't CLI flags at all (e.g. an augmentation edit in
+    data.py) -- anything reachable only by pulling new code."""
+    try:
+        out = subprocess.run(
+            ['git', 'rev-parse', '--short=10', 'HEAD'],
+            cwd=str(_HERE), capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return 'unknown'
+
+
+def _build_signature(args, scripts: list) -> dict:
+    return {
+        'backbone': args.backbone, 'scripts': list(scripts), 'epochs': args.epochs,
+        'freeze_epochs': args.freeze_epochs, 'scheduler': args.scheduler,
+        'mixup_alpha': args.mixup_alpha, 'unfreeze_blocks': args.unfreeze_blocks,
+        'batch_size': args.batch_size, 'lr': args.lr, 'augment': args.augment,
+        'grid_mode': args.grid_mode, 'clip_grad': args.clip_grad,
+        'select_metric': args.select_metric, 'max_per_class': args.max_per_class,
+        'min_per_class': args.min_per_class, 'seed': args.seed,
+        'weighted_sampler': not args.no_weighted_sampler,
+        'git_commit': _git_commit_hash(),
+    }
+
+
+def _script_tag(scripts) -> str:
+    """Mirrors remote_train.py's _make_ckpt_dir() naming: 'all' for the full
+    script set, the single script name, or an underscore-joined subset."""
+    if set(scripts) >= set(_SCRIPT_NAMES):
+        return 'all'
+    if len(scripts) == 1:
+        return scripts[0]
+    return '_'.join(sorted(scripts))
+
+
+def _check_and_archive_stale_run(ckpt_dir: Path, scripts, args, signature: dict):
+    """Archive ckpt_dir's existing files before this run can overwrite them,
+    if they belong to a different training plan. Two triggers:
+
+      A. Fresh restart (not args.resume) with prior artifacts present --
+         always archives. A fresh run never seeds progress.json's history
+         (see main()), so it gets silently discarded either way regardless
+         of whether the config matches.
+      B. Resuming, but the prior config.json (written under this feature --
+         has a 'git_commit' key) disagrees with the current signature on
+         any compared field -- archives, then clears args.resume so the
+         rest of main() proceeds as a fresh run: the checkpoint being
+         resumed from is itself in the file set that just got archived.
+
+    Otherwise (resuming with a match, no prior artifacts, or a legacy
+    config.json predating this feature) -- does nothing.
+    """
+    from datetime import datetime
+
+    config_path = ckpt_dir / 'config.json'
+    has_prior_artifacts = (ckpt_dir / 'last.pt').exists() or (ckpt_dir / 'progress.json').exists()
+
+    prior_config = None
+    if config_path.exists():
+        try:
+            prior_config = json.loads(config_path.read_text())
+        except Exception as e:
+            print(f'[train] Warning: could not read prior config.json for signature check: {e}')
+
+    reason, mismatched_fields = None, []
+
+    if not args.resume:
+        if has_prior_artifacts:
+            reason = 'fresh_restart'
+    elif prior_config is not None and 'git_commit' in prior_config:
+        for key in _SIGNATURE_KEYS:
+            old_val, new_val = prior_config.get(key), signature.get(key)
+            if old_val != new_val:
+                mismatched_fields.append({'field': key, 'old': old_val, 'new': new_val})
+        old_hash, new_hash = prior_config.get('git_commit'), signature.get('git_commit')
+        if old_hash not in (None, 'unknown') and new_hash not in (None, 'unknown') and old_hash != new_hash:
+            mismatched_fields.append({'field': 'git_commit', 'old': old_hash, 'new': new_hash})
+        if mismatched_fields:
+            reason = 'resume_signature_mismatch'
+
+    if reason is None:
+        return
+
+    script_tag   = _script_tag(scripts)
+    archive_root = (ckpt_dir if script_tag == 'all' else ckpt_dir.parent) / 'archive' / script_tag
+    archive_root.mkdir(parents=True, exist_ok=True)
+    run_n = len([p for p in archive_root.iterdir() if p.is_dir()]) + 1
+
+    last_epoch = '?'
+    progress_path = ckpt_dir / 'progress.json'
+    if progress_path.exists():
+        try:
+            last_epoch = json.loads(progress_path.read_text()).get('completed', '?')
+        except Exception:
+            pass
+
+    dest = archive_root / f'{datetime.now().strftime("%Y%m%d")}_run{run_n}_epoch{last_epoch}'
+    dest.mkdir(parents=True)
+
+    moved = []
+    for name in _ARCHIVE_FILES:
+        src = ckpt_dir / name
+        if src.exists():
+            shutil.move(str(src), str(dest / name))
+            moved.append(name)
+    runs_dir = ckpt_dir / 'runs'
+    if runs_dir.exists():
+        shutil.move(str(runs_dir), str(dest / 'runs'))
+        moved.append('runs/')
+
+    (dest / 'archive.json').write_text(json.dumps({
+        'reason': reason,
+        'archived_at': datetime.now().isoformat(timespec='seconds'),
+        'prior_signature': prior_config,
+        'attempted_signature': signature,
+        'mismatched_fields': mismatched_fields,
+        'last_completed_epoch': last_epoch,
+    }, indent=2))
+
+    label = 'Mismatched --resume' if reason == 'resume_signature_mismatch' else 'Fresh restart'
+    print(f'[train] {label} -- archived prior run ({", ".join(moved) or "no files"}) to {dest}')
+    if mismatched_fields:
+        print('[train] Mismatched parameters:')
+        for m in mismatched_fields:
+            print(f"    {m['field']}: {m['old']!r} -> {m['new']!r}")
+
+    if reason == 'resume_signature_mismatch':
+        # The checkpoint --resume pointed at was just archived out from under
+        # it and its config no longer matches this run's plan -- nothing
+        # consistent is left to resume from, so continue as a fresh run.
+        args.resume = None
+
+
 def _make_p1_optimizer(model, lr):
     return torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()), lr=lr
@@ -133,13 +290,16 @@ def main():
     dataset_dirs = [str(_DATASET_ROOT / s) for s in scripts]
     print(f'[train] Scripts: {", ".join(scripts)}')
 
-    # Write config so compare.py knows which backbone to load for this script set
-    json.dump(
-        {'backbone': args.backbone, 'scripts': list(scripts), 'epochs': args.epochs,
-         'freeze_epochs': args.freeze_epochs, 'scheduler': args.scheduler,
-         'mixup_alpha': args.mixup_alpha},
-        open(ckpt_dir / 'config.json', 'w'), indent=2,
-    )
+    # Compare this run's plan against whatever produced ckpt_dir's existing
+    # files, archiving them first if they don't match (see
+    # _check_and_archive_stale_run docstring) -- must run before anything
+    # below writes into ckpt_dir. May clear args.resume.
+    signature = _build_signature(args, scripts)
+    _check_and_archive_stale_run(ckpt_dir, scripts, args, signature)
+
+    # Write config so compare.py knows which backbone to load for this script
+    # set; also doubles as the recorded signature for the next invocation.
+    json.dump(signature, open(ckpt_dir / 'config.json', 'w'), indent=2)
 
     train_loader, val_loader, test_loader, class_names = get_dataloaders(
         dataset_dirs=dataset_dirs,
