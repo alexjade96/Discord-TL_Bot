@@ -47,7 +47,13 @@ class SimulateJPEG:
 # land on the centre character, a neighbour, or a boundary between two —
 # simulating how a character looks inside a word or line of text.
 # Horizontal flip is intentionally omitted: it would mirror b↔d, p↔q, etc.
-# Crop scale (0.20–0.45) on the 3× wider grid gives ~0.6–1.4 char widths.
+# Crop scale (0.40-0.75) on the 3x wider grid gives ~1.2-2.3 char widths --
+# widened from (0.20-0.45) because that tighter range let RandomResizedCrop
+# land on a bare stroke fragment of many different glyphs, and eval_tf (plain
+# Resize, no grid/crop) never sees that fragment view -- see the Latin
+# confused-pairs diagnostic (0.512 val_acc checkpoint, 2026-08-13): ~80% of
+# top-25 confusions were unrelated glyphs misclassified as low_i, consistent
+# with the model learning "ambiguous stroke fragment -> i" from tight crops.
 
 _NORMALIZE = transforms.Normalize(
     mean=[0.485, 0.456, 0.406],
@@ -98,7 +104,7 @@ def get_transforms(augment: str = 'heavy', peer_pool: list | None = None,
     base = [
         transforms.RandomResizedCrop(
             224,
-            scale=(0.75, 1.0) if augment == 'light' else (0.20, 0.45),
+            scale=(0.75, 1.0) if augment == 'light' else (0.40, 0.75),
             ratio=(0.85, 1.15),
         ),
         transforms.RandomRotation(degrees=12),
