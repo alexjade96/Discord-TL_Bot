@@ -47,10 +47,15 @@ REPO_URL = f"https://github.com/{GITHUB_USERNAME}/Discord-TL_Bot.git"
 # Where the repo is cloned on the remote VM (fast local SSD).
 REPO_DIR = "/content/Discord-TL_Bot"
 
-# Path to a zipped copy of char-dataset on Drive.
-# Upload char-dataset.zip to DRIVE_ROOT/ before the first session.
-# Alternatively set to None to copy from DRIVE_ROOT/char-dataset/ directly.
-DATASET_ZIP = f"{DRIVE_ROOT}/char-dataset.zip"
+# Dataset folder/zip base name. Override with --dataset-name to train against
+# an alternate dataset variant (e.g. char-dataset-ctx) without touching the
+# default char-dataset/ workflow any other invocation relies on.
+DATASET_NAME = "char-dataset"
+
+# Path to a zipped copy of the dataset on Drive.
+# Upload <DATASET_NAME>.zip to DRIVE_ROOT/ before the first session.
+# Alternatively set to None to copy from DRIVE_ROOT/<DATASET_NAME>/ directly.
+DATASET_ZIP = f"{DRIVE_ROOT}/{DATASET_NAME}.zip"
 
 # ============================================================
 # TRAINING HYPERPARAMETERS
@@ -64,22 +69,33 @@ EPOCHS        = 48
 _ALL_SCRIPTS = {"latin", "kana", "hangul", "cjk"}
 
 
-def _make_ckpt_dir(scripts: list) -> str:
+def _make_ckpt_dir(scripts: list, dataset_name: str = "char-dataset") -> str:
     """Return the checkpoint directory for the given script list.
 
     - All four scripts (or 'all')  -> checkpoints/
     - Single script                -> checkpoints/<script>/
     - Subset of scripts            -> checkpoints/<a>_<b>_.../ (sorted)
+
+    A non-default dataset_name is appended as a suffix (e.g. "_ctx") so a
+    comparison run against an alternate dataset variant can never land in
+    the same directory as -- and silently overwrite -- a run trained on the
+    default char-dataset/. Only fires when dataset_name != "char-dataset";
+    every existing call site keeps writing to the same path it always has.
     """
     s = _ALL_SCRIPTS if "all" in scripts else set(scripts)
     if s >= _ALL_SCRIPTS:
-        return f"{DRIVE_ROOT}/checkpoints"
-    if len(scripts) == 1:
-        return f"{DRIVE_ROOT}/checkpoints/{scripts[0]}"
-    return f"{DRIVE_ROOT}/checkpoints/{'_'.join(sorted(s))}"
+        base = f"{DRIVE_ROOT}/checkpoints"
+    elif len(scripts) == 1:
+        base = f"{DRIVE_ROOT}/checkpoints/{scripts[0]}"
+    else:
+        base = f"{DRIVE_ROOT}/checkpoints/{'_'.join(sorted(s))}"
+    if dataset_name != "char-dataset":
+        suffix = dataset_name[len("char-dataset"):].lstrip("-_") or dataset_name
+        base = f"{base}_{suffix}"
+    return base
 
 
-CKPT_DIR = _make_ckpt_dir(SCRIPTS)
+CKPT_DIR = _make_ckpt_dir(SCRIPTS, DATASET_NAME)
 FREEZE_EPOCHS   = 3                # head-only warm-up epochs before backbone fine-tune
 UNFREEZE_BLOCKS = 4                # reverted from 2 -- that run (LR 1e-4 + unfreeze 2)
                                     # converged much slower than UNFREEZE_BLOCKS=4 did, so
@@ -165,11 +181,11 @@ def install_deps():
 
 def sync_dataset():
     """
-    Copy char-dataset from Drive to fast VM-local SSD.
+    Copy the dataset (DATASET_NAME) from Drive to fast VM-local SSD.
     Skipped if all required script subdirs already exist locally and are populated.
-    Prefers DATASET_ZIP; falls back to a plain directory at DRIVE_ROOT/char-dataset/.
+    Prefers DATASET_ZIP; falls back to a plain directory at DRIVE_ROOT/<DATASET_NAME>/.
     """
-    local_root = Path(REPO_DIR) / "Models" / "Datasets" / "char-dataset"
+    local_root = Path(REPO_DIR) / "Models" / "Datasets" / DATASET_NAME
     scripts_needed = (
         {"latin", "kana", "hangul", "cjk"} if "all" in SCRIPTS else set(SCRIPTS)
     )
@@ -213,7 +229,7 @@ def sync_dataset():
                   f"are missing under {local_root}: {missing}")
             sys.exit(1)
     else:
-        drive_dir = Path(DRIVE_ROOT) / "char-dataset"
+        drive_dir = Path(DRIVE_ROOT) / DATASET_NAME
         if drive_dir.exists():
             print(f"[setup] Copying {drive_dir} -> {local_root} ...")
             if local_root.exists():
@@ -224,10 +240,9 @@ def sync_dataset():
                 f"\n[setup] ERROR: No dataset found.\n"
                 f"  Expected zip : {zip_path}\n"
                 f"  Expected dir : {drive_dir}\n\n"
-                f"  To fix: zip the char-dataset/ folder and upload it to Drive:\n"
-                f"    Compress-Archive -Path Models\\Datasets\\char-dataset "
-                f"-DestinationPath char-dataset.zip\n"
-                f"  Then upload char-dataset.zip to {DRIVE_ROOT}/ on Google Drive."
+                f"  To fix: zip the {DATASET_NAME}/ folder and upload it to Drive:\n"
+                f"    python Models/remote_train.py --zip-dataset --dataset-name {DATASET_NAME}\n"
+                f"  Then upload {DATASET_NAME}.zip to {DRIVE_ROOT}/ on Google Drive."
             )
             sys.exit(1)
 
@@ -236,22 +251,23 @@ def sync_dataset():
 # DATASET ZIP (run locally before first remote session)
 # ============================================================
 
-def zip_dataset(output_path: str = None, scripts: list = None):
+def zip_dataset(output_path: str = None, scripts: list = None, dataset_name: str = "char-dataset"):
     """
-    Zip Models/Datasets/char-dataset/ for upload to Drive.
+    Zip Models/Datasets/<dataset_name>/ for upload to Drive.
 
-    The archive always contains a top-level 'char-dataset/' folder so that
-    sync_dataset()'s 'unzip -d <Datasets/>'' unpacks to the correct location.
+    The archive always contains a top-level '<dataset_name>/' folder so that
+    sync_dataset()'s extraction unpacks to the correct location.
 
     Run locally (Windows):
         python Models/remote_train.py --zip-dataset
         python Models/remote_train.py --zip-dataset --scripts latin kana
         python Models/remote_train.py --zip-dataset --zip-output D:/upload/char-dataset.zip
+        python Models/remote_train.py --zip-dataset --dataset-name char-dataset-ctx
 
     Then upload the resulting zip to:
-        My Drive/Colab Notebooks/TL-Bot/char-dataset.zip
+        My Drive/Colab Notebooks/TL-Bot/<dataset_name>.zip
     """
-    dataset_root = Path(__file__).parent / "Datasets" / "char-dataset"
+    dataset_root = Path(__file__).parent / "Datasets" / dataset_name
     if not dataset_root.exists():
         print(f"[zip] ERROR: Dataset not found at {dataset_root}")
         sys.exit(1)
@@ -270,7 +286,7 @@ def zip_dataset(output_path: str = None, scripts: list = None):
         sys.exit(1)
 
     if output_path is None:
-        out = Path(__file__).parent.parent / "char-dataset.zip"
+        out = Path(__file__).parent.parent / f"{dataset_name}.zip"
     else:
         out = Path(output_path)
 
@@ -285,7 +301,7 @@ def zip_dataset(output_path: str = None, scripts: list = None):
         for subdir in subdirs:
             for file in sorted(subdir.rglob("*")):
                 if file.is_file():
-                    arcname = Path("char-dataset") / subdir.name / file.relative_to(subdir)
+                    arcname = Path(dataset_name) / subdir.name / file.relative_to(subdir)
                     zf.write(file, arcname)
                     written += 1
                     if written % 5000 == 0:
@@ -293,7 +309,7 @@ def zip_dataset(output_path: str = None, scripts: list = None):
 
     size_mb = out.stat().st_size / 1024 / 1024
     print(f"[zip] Done: {written} files, {size_mb:.1f} MB -> {out}")
-    print(f"\n  Upload to Drive: My Drive/Colab Notebooks/TL-Bot/char-dataset.zip")
+    print(f"\n  Upload to Drive: My Drive/Colab Notebooks/TL-Bot/{dataset_name}.zip")
 
 
 # ============================================================
@@ -349,6 +365,7 @@ def train(resume: bool, smoke_test: bool, sync_to: str = None):
         "--clip-grad",      str(CLIP_GRAD),
         "--lr",             str(LR),
         "--checkpoint-dir", CKPT_DIR,
+        "--dataset-name",   DATASET_NAME,
         "--no-tensorboard",
     ]
 
@@ -433,7 +450,12 @@ def parse_args():
     p.add_argument("--zip-dataset",   action="store_true",
                    help="Zip char-dataset for Drive upload (run locally, then exit)")
     p.add_argument("--zip-output",    default=None,
-                   help="Output path for --zip-dataset (default: <repo-root>/char-dataset.zip)")
+                   help="Output path for --zip-dataset (default: <repo-root>/<dataset-name>.zip)")
+    p.add_argument("--dataset-name",  default=None,
+                   help="Override the dataset folder/zip base name (default: char-dataset). "
+                        "Use for alternate dataset variants, e.g. char-dataset-ctx. Also "
+                        "suffixes the checkpoint dir (checkpoints/<script>_<suffix>) so a "
+                        "comparison run can never overwrite a default-dataset run's checkpoint.")
     p.add_argument("--scripts",        nargs="+", default=None, metavar="SCRIPT",
                    help="Override SCRIPTS config (e.g. --scripts latin kana)")
     p.add_argument("--epochs",         type=int, default=None,
@@ -463,11 +485,13 @@ def main():
     args = parse_args()
 
     # Apply CLI overrides before anything reads these globals.
-    global SCRIPTS, EPOCHS, CKPT_DIR, DRIVE_ROOT, DATASET_ZIP, REPO_DIR
+    global SCRIPTS, EPOCHS, CKPT_DIR, DRIVE_ROOT, DATASET_NAME, DATASET_ZIP, REPO_DIR
     global FREEZE_EPOCHS, MIXUP_ALPHA, SCHEDULER, LR
     if args.storage_root is not None:
         DRIVE_ROOT  = args.storage_root
-        DATASET_ZIP = f"{DRIVE_ROOT}/char-dataset.zip"
+    if args.dataset_name is not None:
+        DATASET_NAME = args.dataset_name
+    DATASET_ZIP = f"{DRIVE_ROOT}/{DATASET_NAME}.zip"
     if args.repo_dir is not None:
         REPO_DIR = args.repo_dir
     if args.scripts is not None:
@@ -482,11 +506,12 @@ def main():
         SCHEDULER = args.scheduler
     if args.lr is not None:
         LR = args.lr
-    CKPT_DIR = _make_ckpt_dir(SCRIPTS)
+    CKPT_DIR = _make_ckpt_dir(SCRIPTS, DATASET_NAME)
 
     print("=" * 60)
     print(" Remote Training Setup")
     print(f"  Scripts   : {SCRIPTS}")
+    print(f"  Dataset   : {DATASET_NAME}")
     print(f"  Epochs    : {EPOCHS}  (freeze={FREEZE_EPOCHS})")
     print(f"  Backbone  : {BACKBONE}")
     print(f"  Scheduler : {SCHEDULER}  mixup={MIXUP_ALPHA}")
@@ -494,7 +519,7 @@ def main():
     print("=" * 60)
 
     if args.zip_dataset:
-        zip_dataset(output_path=args.zip_output, scripts=args.scripts)
+        zip_dataset(output_path=args.zip_output, scripts=args.scripts, dataset_name=DATASET_NAME)
         return
 
     mount_drive()

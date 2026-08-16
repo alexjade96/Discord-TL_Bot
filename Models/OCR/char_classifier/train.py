@@ -32,8 +32,7 @@ else:
                                save_checkpoint, set_seed)
 
 
-_HERE         = Path(__file__).parent
-_DATASET_ROOT = _HERE.parent.parent / 'Datasets' / 'char-dataset'
+_HERE          = Path(__file__).parent
 _DEFAULT_CKPTS = str(_HERE.parent / 'checkpoints')
 
 _SCRIPT_NAMES = ('latin', 'kana', 'hangul', 'cjk')
@@ -48,6 +47,7 @@ _SIGNATURE_KEYS = (
     'backbone', 'scripts', 'epochs', 'freeze_epochs', 'scheduler', 'mixup_alpha',
     'unfreeze_blocks', 'batch_size', 'lr', 'augment', 'grid_mode', 'clip_grad',
     'select_metric', 'max_per_class', 'min_per_class', 'seed', 'weighted_sampler',
+    'dataset_name',
 )
 
 # Top-level checkpoint-dir contents an archive sweeps up; 'runs/' (TensorBoard
@@ -63,6 +63,12 @@ def parse_args():
                    help='Script subdirs to include. "all" expands to latin kana hangul cjk '
                         '(default: latin)')
     p.add_argument('--checkpoint-dir',   default=_DEFAULT_CKPTS)
+    p.add_argument('--dataset-name',     default='char-dataset',
+                   help='Dataset folder name under Models/Datasets/ (default: char-dataset). '
+                        'Use for alternate dataset variants, e.g. char-dataset-ctx '
+                        '(string-rendered + target-glyph-cropped tiles -- see '
+                        'render_chars_context.py) instead of the default isolated '
+                        'centered-glyph tiles.')
     p.add_argument('--backbone',         default='dinov2_vits14',
                    choices=['dinov2_vits14', 'dinov2_vitb14', 'convnext_tiny'],
                    help='dinov2_vitb14 is higher-capacity but needs a GPU (86M params)')
@@ -142,6 +148,7 @@ def _build_signature(args, scripts: list) -> dict:
         'select_metric': args.select_metric, 'max_per_class': args.max_per_class,
         'min_per_class': args.min_per_class, 'seed': args.seed,
         'weighted_sampler': not args.no_weighted_sampler,
+        'dataset_name': args.dataset_name,
         'git_commit': _git_commit_hash(),
     }
 
@@ -287,8 +294,9 @@ def main():
         ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset_dirs = [str(_DATASET_ROOT / s) for s in scripts]
-    print(f'[train] Scripts: {", ".join(scripts)}')
+    dataset_root = _HERE.parent.parent / 'Datasets' / args.dataset_name
+    dataset_dirs = [str(dataset_root / s) for s in scripts]
+    print(f'[train] Scripts: {", ".join(scripts)}  dataset={args.dataset_name}')
 
     # Compare this run's plan against whatever produced ckpt_dir's existing
     # files, archiving them first if they don't match (see

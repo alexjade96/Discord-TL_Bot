@@ -168,8 +168,9 @@ windows-fonts/
 # PyTorch Model Checkpoint files
 checkpoints/
 
-# Dataset zip (large binary; upload to Drive/Lightning manually)
-char-dataset.zip
+# Dataset zip (large binary; upload to Drive/Lightning manually) -- wildcard
+# covers dataset-name variants too (char-dataset-ctx.zip, char-dataset-ctx-small.zip, ...)
+char-dataset*.zip
 
 # Image files
 *.png
