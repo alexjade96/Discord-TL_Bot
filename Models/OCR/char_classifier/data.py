@@ -66,7 +66,13 @@ _NORMALIZE = transforms.Normalize(
 # 'single'  — TileGrid3x3 only (original default; fastest)
 # 'rotated' — TileGrid3x3 + TileGrid3x3Rotated (adds skew/angle invariance)
 # 'all'     — all six variants chosen at random per sample
-_GRID_MODES = ('single', 'rotated', 'all')
+# 'none'    — skip grid tiling entirely. TileGrid3x3 was designed to fake
+#             "glyph in context" for isolated centered-glyph tiles; on a
+#             dataset whose tiles are already real string-rendered/context-
+#             cropped (see render_chars_context.py), it re-tiles already-real
+#             context into a synthetic grid and re-crops that -- redundant
+#             with, and harsher than, what the dataset was built to provide.
+_GRID_MODES = ('single', 'rotated', 'all', 'none')
 
 
 def _build_grid_tf(mode: str, peer_pool: list | None):
@@ -87,6 +93,8 @@ def _build_grid_tf(mode: str, peer_pool: list | None):
             TileGrid3x3Orbital(),
             TileGrid3x3OrbitalRotated(),
         ])
+    if mode == 'none':
+        return None
     raise ValueError(f'Unknown grid_mode {mode!r}. Choose: {" | ".join(_GRID_MODES)}')
 
 
@@ -112,11 +120,12 @@ def get_transforms(augment: str = 'heavy', peer_pool: list | None = None,
     ]
 
     if augment == 'heavy':
+        _grid_tf = _build_grid_tf(grid_mode, peer_pool)
         train_tf = transforms.Compose([
             SimulateJPEG(quality_range=(40, 90)),
             transforms.RandomAffine(degrees=0, shear=10),
             transforms.RandomPerspective(distortion_scale=0.2, p=0.3),
-            _build_grid_tf(grid_mode, peer_pool),
+            *([_grid_tf] if _grid_tf is not None else []),
             *base,
             transforms.ToTensor(),
             transforms.GaussianBlur(kernel_size=(3, 7), sigma=(0.1, 2.0)),

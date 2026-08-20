@@ -624,7 +624,7 @@ Writes `config.json` at training start so `compare.py` can reload the correct ba
 .\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin --resume checkpoints/latin/best.pt
 ```
 
-`--grid-mode` options: `single` (TileGrid3x3 only, default/fastest), `rotated` (3x3 or 3x3Rotated per sample), `all` (random choice among all 6 variants). All 6 variants: TileGrid3x3, TileGrid3x3Rotated, TileGrid3x3Pair, TileGrid3x3PairRotated, TileGrid3x3Orbital, TileGrid3x3OrbitalRotated (defined in `grid_augments.py`).
+`--grid-mode` options: `single` (TileGrid3x3 only, default/fastest), `rotated` (3x3 or 3x3Rotated per sample), `all` (random choice among all 6 variants), `none` (skip grid tiling entirely — for datasets whose tiles already carry real string context, e.g. a `render_chars_context.py`-generated dataset, where tiling on top would redundantly re-tile already-real context). All 6 variants: TileGrid3x3, TileGrid3x3Rotated, TileGrid3x3Pair, TileGrid3x3PairRotated, TileGrid3x3Orbital, TileGrid3x3OrbitalRotated (defined in `grid_augments.py`).
 
 **Training state:** No checkpoint exists yet for any script.
 

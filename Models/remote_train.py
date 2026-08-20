@@ -96,19 +96,38 @@ def _make_ckpt_dir(scripts: list, dataset_name: str = "char-dataset") -> str:
 
 
 CKPT_DIR = _make_ckpt_dir(SCRIPTS, DATASET_NAME)
+# Run 6 ablation (2026-08-20): GRID_MODE "none" against char-dataset-ctx-small
+# tests whether TileGrid3x3 -- redundant on tiles that already carry real
+# string context, see GRID_MODE below -- was actively hurting run 5 (0.7719
+# @ epoch 24) or just neutral. A one-off "_nogrid" suffix keeps this run's
+# checkpoint dir separate from run 5's (checkpoints/latin_ctx-small/), which
+# stays untouched at its original path rather than being auto-archived by
+# train.py's signature-mismatch check. Remove this override (revert to the
+# bare _make_ckpt_dir(...) call above) once the comparison is done.
+CKPT_DIR = f"{CKPT_DIR}_nogrid"
 FREEZE_EPOCHS   = 3                # head-only warm-up epochs before backbone fine-tune
 UNFREEZE_BLOCKS = 4                # reverted from 2 -- that run (LR 1e-4 + unfreeze 2)
                                     # converged much slower than UNFREEZE_BLOCKS=4 did, so
                                     # it wasn't isolating anything useful. See GRID_MODE.
 BATCH_SIZE      = 64
 BACKBONE        = "dinov2_vits14"  # dinov2_vits14 | dinov2_vitb14 | convnext_tiny
-GRID_MODE       = "single"         # single | rotated | all -- "all" includes grid rotation
-                                    # variants that rotate the focus glyph itself (90/180/270deg),
-                                    # which turns rotation-ambiguous Latin letters into each
-                                    # other (b<->q, d<->p, n<->u, 6<->9, M<->W) while keeping
-                                    # the original label -- contradictory supervision, likely
-                                    # cause of Latin's early plateau (val_acc peaked epoch 9
-                                    # then never recovered). "single" drops all grid rotation.
+GRID_MODE       = "none"           # single | rotated | all | none -- "all" includes grid
+                                    # rotation variants that rotate the focus glyph itself
+                                    # (90/180/270deg), which turns rotation-ambiguous Latin
+                                    # letters into each other (b<->q, d<->p, n<->u, 6<->9,
+                                    # M<->W) while keeping the original label -- contradictory
+                                    # supervision, likely cause of Latin's early plateau
+                                    # (val_acc peaked epoch 9 then never recovered). "single"
+                                    # drops all grid rotation. "none" (current, run 6) drops
+                                    # grid tiling entirely -- see data.py's _GRID_MODES
+                                    # comment: run 5's confused-pairs diagnostic confirmed the
+                                    # string-render/target-glyph-crop dataset (char-dataset-
+                                    # ctx-small) fixes the stroke-fragment collapse regardless,
+                                    # but still ran TileGrid3x3 on top of already-real context
+                                    # -- this run isolates whether that redundant step was
+                                    # actively hurting (plausible cause of run 5's persistent
+                                    # train/val gap: train_acc ~0.41-0.50 vs val_acc ~0.77
+                                    # throughout the whole fine-tune phase) or just neutral.
 MIXUP_ALPHA     = 0.2              # 0.4 caused persistent train<val gap; 0.2 is gentler
 SCHEDULER       = "cosine"         # cosine | cosine-warm | none
 CLIP_GRAD       = 1.0

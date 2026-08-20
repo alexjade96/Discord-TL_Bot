@@ -85,9 +85,13 @@ def parse_args():
     p.add_argument('--augment',          default='heavy',
                    choices=['none', 'light', 'heavy'])
     p.add_argument('--grid-mode',        default='single',
-                   choices=['single', 'rotated', 'all'],
+                   choices=['single', 'rotated', 'all', 'none'],
                    help='single=TileGrid3x3 only | rotated=+full-grid rotation | '
-                        'all=random choice among all 6 variants per sample')
+                        'all=random choice among all 6 variants per sample | '
+                        'none=skip grid tiling entirely (use for datasets whose '
+                        'tiles already carry real string context, e.g. '
+                        'render_chars_context.py output -- grid tiling on top '
+                        'would re-tile already-real context redundantly)')
     p.add_argument('--mixup-alpha',      type=float, default=0.2,
                    help='MixUp alpha (Beta distribution param). 0 = disabled '
                         '(default 0.2; 0.4 created a 10-15pt train/val gap with no accuracy gain)')

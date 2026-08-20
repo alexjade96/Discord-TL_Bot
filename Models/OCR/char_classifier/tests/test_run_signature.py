@@ -18,6 +18,7 @@ def make_args(**overrides):
         mixup_alpha=0.2, unfreeze_blocks=4, batch_size=64, lr=3e-4, augment='heavy',
         grid_mode='single', clip_grad=1.0, select_metric='val_acc', max_per_class=0,
         min_per_class=5, seed=42, no_weighted_sampler=False, resume=None,
+        dataset_name='char-dataset',
     )
     base.update(overrides)
     return SimpleNamespace(**base)
