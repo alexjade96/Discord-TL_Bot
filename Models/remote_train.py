@@ -96,15 +96,19 @@ def _make_ckpt_dir(scripts: list, dataset_name: str = "char-dataset") -> str:
 
 
 CKPT_DIR = _make_ckpt_dir(SCRIPTS, DATASET_NAME)
-# Run 6 ablation (2026-08-20): GRID_MODE "none" against char-dataset-ctx-small
-# tests whether TileGrid3x3 -- redundant on tiles that already carry real
-# string context, see GRID_MODE below -- was actively hurting run 5 (0.7719
-# @ epoch 24) or just neutral. A one-off "_nogrid" suffix keeps this run's
-# checkpoint dir separate from run 5's (checkpoints/latin_ctx-small/), which
-# stays untouched at its original path rather than being auto-archived by
-# train.py's signature-mismatch check. Remove this override (revert to the
-# bare _make_ckpt_dir(...) call above) once the comparison is done.
-CKPT_DIR = f"{CKPT_DIR}_nogrid"
+# NOTE: this module-level CKPT_DIR is dead for the CLI path -- main() (see its
+# "CKPT_DIR = _make_ckpt_dir(...)" line) unconditionally recomputes it from
+# --scripts/--storage-root/--dataset-name before train() runs, since every
+# Colab/Kaggle/etc. invocation runs this file as __main__ with CLI args. A
+# one-off "_nogrid" suffix was tried here for run 6 (GRID_MODE "none" vs run
+# 5's "single") to keep it out of run 5's checkpoints/latin_ctx-small/ dir --
+# it never took effect for exactly that reason, and run 6 ended up in
+# checkpoints/latin_ctx-small/ instead. train.py's existing archive-safety net
+# (_check_and_archive_stale_run) caught the resulting signature mismatch and
+# safely archived run 5's finished files to checkpoints/archive/latin/ first,
+# so nothing was lost -- but any future one-off checkpoint-dir override needs
+# to also patch main()'s recompute (or extend _make_ckpt_dir itself), not just
+# this module-level default.
 FREEZE_EPOCHS   = 3                # head-only warm-up epochs before backbone fine-tune
 UNFREEZE_BLOCKS = 4                # reverted from 2 -- that run (LR 1e-4 + unfreeze 2)
                                     # converged much slower than UNFREEZE_BLOCKS=4 did, so
