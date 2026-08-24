@@ -249,5 +249,5 @@ __marimo__/
 # User recognition model research checkpoints
 Models/UserRecognition/checkpoints/
 
-# Derived chat corpus (rebuild with Models/Datasets/build_chat.py)
+# Derived chat corpus (rebuild with Models/utils/generators/build_chat.py)
 Models/Datasets/chat-dataset/

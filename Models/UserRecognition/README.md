@@ -41,7 +41,7 @@ Models/UserRecognition/
 ## Dataset
 
 Training data comes from `Models/Datasets/chat-dataset/{guild_id}/`, built by
-`Models/Datasets/build_chat.py` from the bot's collected message history. See
+`Models/utils/generators/build_chat.py` from the bot's collected message history. See
 the "Chat dataset" section of `Models/PIPELINE.md` for what that builder does
 differently from the baseline's `dataset.py` — chronological splitting, bot
 exclusion, message chunking, and a held-out channel option.

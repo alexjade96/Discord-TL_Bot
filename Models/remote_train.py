@@ -47,9 +47,28 @@ REPO_URL = f"https://github.com/{GITHUB_USERNAME}/Discord-TL_Bot.git"
 # Where the repo is cloned on the remote VM (fast local SSD).
 REPO_DIR = "/content/Discord-TL_Bot"
 
-# Dataset folder/zip base name. Override with --dataset-name to train against
-# an alternate dataset variant (e.g. char-dataset-ctx) without touching the
-# default char-dataset/ workflow any other invocation relies on.
+# Dataset folder/zip base name. char-dataset/ is string-rendered +
+# target-glyph-cropped tiles (see render_chars_context.py) -- promoted as the
+# Latin default as of run 6, beating the old isolated-tile pipeline by
+# +13-39pts and cutting the low_i stroke-fragment collapse from 17.5% to
+# 5.2% of errors (see Models/OCR/FINDINGS.md). Override with --dataset-name
+# to train against char-dataset-legacy (old isolated-tile pipeline) or
+# another named variant.
+#
+# IMPORTANT -- this default does NOT match Google Drive's zip names. The
+# local Models/Datasets/ rename (promoting the real-context dataset to plain
+# "char-dataset") was deliberately NOT mirrored on Drive, so DATASET_ZIP
+# below still resolves against Drive's *original* run-time names:
+#   char-dataset.zip            = legacy isolated-tile data (matches this
+#                                  module's default string, but is the WRONG
+#                                  data for a default/promoted run)
+#   char-dataset-ctx-small.zip  = run 5/6 data (what this module's default
+#                                  string is actually supposed to mean)
+#   char-dataset-ctx.zip        = full/uncapped variant (run 7+)
+# Any remote/Colab session MUST pass --dataset-name explicitly matching the
+# Drive zip it actually wants -- do not rely on this module's default when
+# running against Drive. colab_train.ipynb's Cell 1 sets DATASET_NAME
+# explicitly for exactly this reason; keep it explicit there too.
 DATASET_NAME = "char-dataset"
 
 # Path to a zipped copy of the dataset on Drive.
@@ -115,23 +134,22 @@ UNFREEZE_BLOCKS = 4                # reverted from 2 -- that run (LR 1e-4 + unfr
                                     # it wasn't isolating anything useful. See GRID_MODE.
 BATCH_SIZE      = 64
 BACKBONE        = "dinov2_vits14"  # dinov2_vits14 | dinov2_vitb14 | convnext_tiny
-GRID_MODE       = "none"           # single | rotated | all | none -- "all" includes grid
-                                    # rotation variants that rotate the focus glyph itself
+GRID_MODE       = "none"           # single | rotated | all | none -- "none" is the promoted
+                                    # Latin default (run 6 confirmed). char-dataset's tiles
+                                    # already carry real string context (real baseline/
+                                    # kerning/stroke-width from render_chars_context.py);
+                                    # stacking TileGrid3x3 synthetic tiling on top of that was
+                                    # actively harmful, not neutral -- run 6 (grid_mode=none)
+                                    # beat run 5 (grid_mode=single, identical dataset/epochs)
+                                    # by +13pts (0.902 vs 0.772) and cut low_i stroke-fragment
+                                    # errors from 17.5% to 5.2% of total errors. See
+                                    # Models/OCR/FINDINGS.md for the full run 3-6 writeup.
+                                    # "single"/"rotated"/"all" remain correct only for
+                                    # isolated-glyph datasets like the legacy char-dataset --
+                                    # "all" additionally rotates the focus glyph itself
                                     # (90/180/270deg), which turns rotation-ambiguous Latin
                                     # letters into each other (b<->q, d<->p, n<->u, 6<->9,
-                                    # M<->W) while keeping the original label -- contradictory
-                                    # supervision, likely cause of Latin's early plateau
-                                    # (val_acc peaked epoch 9 then never recovered). "single"
-                                    # drops all grid rotation. "none" (current, run 6) drops
-                                    # grid tiling entirely -- see data.py's _GRID_MODES
-                                    # comment: run 5's confused-pairs diagnostic confirmed the
-                                    # string-render/target-glyph-crop dataset (char-dataset-
-                                    # ctx-small) fixes the stroke-fragment collapse regardless,
-                                    # but still ran TileGrid3x3 on top of already-real context
-                                    # -- this run isolates whether that redundant step was
-                                    # actively hurting (plausible cause of run 5's persistent
-                                    # train/val gap: train_acc ~0.41-0.50 vs val_acc ~0.77
-                                    # throughout the whole fine-tune phase) or just neutral.
+                                    # M<->W) while keeping the original label.
 MIXUP_ALPHA     = 0.2              # 0.4 caused persistent train<val gap; 0.2 is gentler
 SCHEDULER       = "cosine"         # cosine | cosine-warm | none
 CLIP_GRAD       = 1.0

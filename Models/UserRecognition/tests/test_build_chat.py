@@ -1,4 +1,4 @@
-"""Tests for Models/Datasets/build_chat.py — filesystem only, no network."""
+"""Tests for Models/utils/generators/build_chat.py — filesystem only, no network."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "Datasets"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "utils", "generators"))
 import build_chat  # noqa: E402
 
 

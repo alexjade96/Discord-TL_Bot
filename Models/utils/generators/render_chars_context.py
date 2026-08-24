@@ -1,6 +1,8 @@
-"""render_chars_context.py -- generate char-dataset-ctx/ using string-level
+"""render_chars_context.py -- generate char-dataset/ using string-level
 rendering + target-glyph cropping, instead of render_chars.py's isolated
-centered-glyph tiles.
+centered-glyph tiles. This is the default/promoted dataset pipeline as of
+run 6 (see Models/OCR/FINDINGS.md); render_chars.py's isolated-tile pipeline
+is now the legacy/opt-in alternative (--dataset-name char-dataset-legacy).
 
 Background: char_classifier's TileGrid3x3 augmentation tiles a single
 centered glyph into a 3x3 grid and crops it to fake "glyph in word
@@ -21,10 +23,11 @@ a crop's edges therefore belongs to a real neighboring glyph, never an
 ownerless fragment.
 
 Reuses render_chars.py's charset builders and font-scanning helpers;
-writes to a separate dataset root (char-dataset-ctx/) so the existing
-char-dataset/ (what runs 1-4 were trained/compared against) is untouched.
+writes to char-dataset/ by default (the promoted default as of run 6).
+Pass --dataset-name to write elsewhere without touching the default, e.g.
+when generating a variant for testing/review only.
 
-Run from Models/Datasets/:
+Run from Models/utils/generators/ (writes into ../../Datasets/):
     python render_chars_context.py --scripts latin
     python render_chars_context.py --scripts latin --variants-per-slot 6
 """
@@ -42,7 +45,7 @@ from render_chars import (
     copy_system_fonts, collect_extra_fonts, extract_cmap,
 )
 
-_HERE            = Path(__file__).parent
+_HERE            = Path(__file__).parent.parent.parent / 'Datasets'  # Models/Datasets/
 
 TILE_SIZE       = 128   # on-disk tile size -- matches render_chars.py's convention;
                         # data.py's transforms resize to the model's 224 input at train time
@@ -217,10 +220,12 @@ def main():
                         'and new pipelines get upsampled to the model\'s 224 input at train '
                         'time regardless of on-disk size, so shrinking this trades disk/'
                         'transfer size for a smaller pre-upsample source, not model input size.')
-    p.add_argument('--dataset-name', default='char-dataset-ctx',
-                   help='Output dataset folder name under Datasets/ (default: char-dataset-ctx). '
-                        'Use a distinct name (e.g. char-dataset-ctx-small) to generate a '
-                        'second variant without touching an existing one.')
+    p.add_argument('--dataset-name', default='char-dataset',
+                   help='Output dataset folder name under Datasets/ (default: char-dataset '
+                        '-- promoted as the default pipeline after run 6, see '
+                        'Models/OCR/FINDINGS.md). Use a distinct name (e.g. char-dataset-ctx-full) '
+                        'to generate an alternate variant for testing/review without touching '
+                        'the default.')
     args = p.parse_args()
     out_root = str(_HERE / args.dataset_name)
 

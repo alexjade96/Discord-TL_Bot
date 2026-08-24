@@ -64,11 +64,12 @@ def parse_args():
                         '(default: latin)')
     p.add_argument('--checkpoint-dir',   default=_DEFAULT_CKPTS)
     p.add_argument('--dataset-name',     default='char-dataset',
-                   help='Dataset folder name under Models/Datasets/ (default: char-dataset). '
-                        'Use for alternate dataset variants, e.g. char-dataset-ctx '
-                        '(string-rendered + target-glyph-cropped tiles -- see '
-                        'render_chars_context.py) instead of the default isolated '
-                        'centered-glyph tiles.')
+                   help='Dataset folder name under Models/Datasets/ (default: char-dataset '
+                        '-- string-rendered + target-glyph-cropped tiles, see '
+                        'render_chars_context.py; promoted as the Latin default after run 6 '
+                        'beat the old isolated-tile pipeline by +13-39pts, see FINDINGS.md). '
+                        'Pass char-dataset-legacy for the old isolated centered-glyph tiles, '
+                        'or another name to train against a distinct alternate variant.')
     p.add_argument('--backbone',         default='dinov2_vits14',
                    choices=['dinov2_vits14', 'dinov2_vitb14', 'convnext_tiny'],
                    help='dinov2_vitb14 is higher-capacity but needs a GPU (86M params)')
@@ -84,14 +85,15 @@ def parse_args():
                    help='Head LR; backbone uses lr * 0.1 in phase 2')
     p.add_argument('--augment',          default='heavy',
                    choices=['none', 'light', 'heavy'])
-    p.add_argument('--grid-mode',        default='single',
+    p.add_argument('--grid-mode',        default='none',
                    choices=['single', 'rotated', 'all', 'none'],
-                   help='single=TileGrid3x3 only | rotated=+full-grid rotation | '
-                        'all=random choice among all 6 variants per sample | '
-                        'none=skip grid tiling entirely (use for datasets whose '
-                        'tiles already carry real string context, e.g. '
-                        'render_chars_context.py output -- grid tiling on top '
-                        'would re-tile already-real context redundantly)')
+                   help='none=skip grid tiling entirely (default -- correct for the '
+                        'default char-dataset dataset, whose tiles already '
+                        'carry real string context; run 6 showed stacking grid tiling '
+                        'on top of real context is actively harmful, see FINDINGS.md) | '
+                        'single=TileGrid3x3 only | rotated=+full-grid rotation | '
+                        'all=random choice among all 6 variants per sample -- pass one '
+                        'of these three only for isolated-glyph datasets like char-dataset')
     p.add_argument('--mixup-alpha',      type=float, default=0.2,
                    help='MixUp alpha (Beta distribution param). 0 = disabled '
                         '(default 0.2; 0.4 created a 10-15pt train/val gap with no accuracy gain)')

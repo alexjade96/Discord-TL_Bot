@@ -492,13 +492,24 @@ Research and training infrastructure for OCR, font classification, and user reco
 
 ```
 Models/
+  utils/
+    generators/
+      render_chars.py         ← generates ../../Datasets/char-dataset-legacy (isolated
+                                 centered-glyph tiles, v1 pipeline; kana/hangul/cjk still
+                                 use this)
+      render_chars_context.py ← generates ../../Datasets/char-dataset (string-render +
+                                 target-glyph crop, v2 pipeline; Latin default as of
+                                 run 6, see Models/OCR/FINDINGS.md)
+      get_fonts.py            ← scans Windows fonts → ../../Datasets/font-dataset/
+                                 (font classifier)
+      build_chat.py           ← generates ../../Datasets/chat-dataset from collected
+                                 Discord history
+      sample_tilegrid_gen.py  ← visual sanity check for grid augments
   Datasets/
-    render_chars.py        ← generates char-dataset (run from Models/Datasets/)
-    get_fonts.py           ← scans Windows fonts → font-dataset/ (font classifier)
-    build_chat.py          ← generates chat-dataset from collected Discord history
-    sample_tilegrid*.py    ← visual sanity checks for grid augments
-    char-dataset/
-      latin/    ← 62 classes, 77,799 images
+    char-dataset/           ← Latin: real string-rendered context (v2, promoted default)
+    char-dataset-legacy/    ← isolated centered-glyph tiles (v1, retained for
+                               retrieval against archived run 1-4 checkpoints)
+      latin/    ← (legacy) 62 classes, 77,799 images
       kana/     ← 169 viable / 172 total classes, 2,036 images
       hangul/   ← 500 classes, 6,000 images
       cjk/      ← 1,312 viable / 3,000 total classes, 10,506 images
@@ -542,17 +553,17 @@ Models/
     tests/                      ← test_build_chat.py, test_user_classifier.py (mocked)
 ```
 
-**Checkpoint selection (both classifiers)**: `--select-metric` decides which epoch becomes `best.pt`. `user_classifier` defaults to `f1` because chat corpora are class-imbalanced and accuracy selects a majority-biased checkpoint; `char_classifier` keeps `val_acc` since `char-dataset` is balanced. Both `train.py` files reload `best.pt` before the final test report — previously they scored the live final-epoch model, so the printed metrics described a checkpoint that was never saved (on the first real run: printed macro-F1 0.52, actual `best.pt` 0.4279).
+**Checkpoint selection (both classifiers)**: `--select-metric` decides which epoch becomes `best.pt`. `user_classifier` defaults to `f1` because chat corpora are class-imbalanced and accuracy selects a majority-biased checkpoint; `char_classifier` keeps `val_acc` since the char-dataset variants are balanced. Both `train.py` files reload `best.pt` before the final test report — previously they scored the live final-epoch model, so the printed metrics described a checkpoint that was never saved (on the first real run: printed macro-F1 0.52, actual `best.pt` 0.4279).
 
 Production feature code never lives under `Models/`. Each `Models/<Area>/` is the research counterpart to a shipped feature: `Models/OCR` → `Translation/2-Image`, `Models/Typography` → `Typography/`, `Models/UserRecognition` → `UserRecognition/`.
 
-#### char-dataset notes
+#### char-dataset-legacy notes
 
 - CJK: only 1,312 of 3,000 classes have ≥ 5 images; the rest are skipped by `build_dataset`. Most CJK classes have 3–4 images because many Windows fonts lack full Joyo coverage. Viable CJK classes contribute ~7,354 training samples.
 - Kana: 3 of 172 classes empty (U+3094/3095/3096 are obsolete kana not in Windows fonts).
-- Latin: 77,799 images across 62 classes — by far the largest script; dominates full-dataset training time.
+- Latin (legacy only — Latin now trains on `char-dataset`, the real-context v2 pipeline): 77,799 images across 62 classes.
 
-#### chat-dataset (`Datasets/build_chat.py`)
+#### chat-dataset (`utils/generators/build_chat.py`)
 
 Reads the bot's collected message history from `UserRecognition/0-Data/data/{guild_id}/` and writes a derived training corpus to `Models/Datasets/chat-dataset/{guild_id}/` (`train/val/test.jsonl`, `label_map.json`, `meta.json`). Segmented by **guild** — the label space differs per guild and `identify.py` is per-guild, so one model per guild is the routing unit.
 
@@ -567,7 +578,7 @@ Five deliberate differences from the production `UserRecognition/0-Data/training
 Refuses to build below 2 surviving authors; emits warnings (short samples, few authors, missing `bot` field) into `meta.json`, which `train.py` echoes at startup. `dropped.short_chunks` counts assembled chunks below `--min-tokens` — if it is large, raise `--chunk`.
 
 ```bash
-cd Models/Datasets/
+cd Models/utils/generators/
 .venv\Scripts\python.exe build_chat.py --list
 .venv\Scripts\python.exe build_chat.py --guild GUILD_ID --chunk 4
 ```
@@ -615,18 +626,20 @@ Writes `config.json` at training start so `compare.py` can reload the correct ba
 .\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin --epochs 5 --freeze-epochs 5 --max-per-class 20
 
 # Per-script full runs (GPU recommended)
-.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin  --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
-.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts kana   --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
-.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts hangul --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
-.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts cjk    --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+# Latin: char-dataset (real-context, promoted default) + grid-mode none (also the default -- shown for clarity)
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin  --epochs 30 --freeze-epochs 5 --grid-mode none --backbone dinov2_vits14 --batch-size 64
+# kana/hangul/cjk: still on the legacy isolated-tile pipeline, not yet migrated to real-context
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts kana   --dataset-name char-dataset-legacy --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts hangul --dataset-name char-dataset-legacy --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+.\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts cjk    --dataset-name char-dataset-legacy --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
 
 # Resume from checkpoint
 .\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin --resume checkpoints/latin/best.pt
 ```
 
-`--grid-mode` options: `single` (TileGrid3x3 only, default/fastest), `rotated` (3x3 or 3x3Rotated per sample), `all` (random choice among all 6 variants), `none` (skip grid tiling entirely — for datasets whose tiles already carry real string context, e.g. a `render_chars_context.py`-generated dataset, where tiling on top would redundantly re-tile already-real context). All 6 variants: TileGrid3x3, TileGrid3x3Rotated, TileGrid3x3Pair, TileGrid3x3PairRotated, TileGrid3x3Orbital, TileGrid3x3OrbitalRotated (defined in `grid_augments.py`).
+`--grid-mode` options: `none` (skip grid tiling entirely — **default**; correct for datasets whose tiles already carry real string context, e.g. the default `char-dataset`/`render_chars_context.py` output, where tiling on top would redundantly re-tile already-real context and was confirmed actively harmful, see `Models/OCR/FINDINGS.md`), `single` (TileGrid3x3 only), `rotated` (3x3 or 3x3Rotated per sample), `all` (random choice among all 6 variants — appropriate only for isolated-glyph datasets like `char-dataset-legacy`). All 6 variants: TileGrid3x3, TileGrid3x3Rotated, TileGrid3x3Pair, TileGrid3x3PairRotated, TileGrid3x3Orbital, TileGrid3x3OrbitalRotated (defined in `grid_augments.py`).
 
-**Training state:** No checkpoint exists yet for any script.
+**Training state:** Latin has a promoted checkpoint from run 6 (`char-dataset` real-context data, `grid_mode=none`, best val_acc **0.9023** @ epoch 23/24) — see `Models/OCR/FINDINGS.md` § "Latin Tile-Context Investigation (Runs 3-6)" for the full run 3-6 history. Run 7 (same config, full uncapped dataset variant + longer epoch budget) is in progress via `Models/colab_train.ipynb`. Kana/hangul/cjk have no checkpoint yet and still train on the legacy isolated-tile pipeline (`char-dataset-legacy`, `grid_mode=all` per the example commands above) pending their own real-context migration.
 
 #### `segment.py` — column-projection character segmenter
 
@@ -678,7 +691,7 @@ Always run scripts with `.venv\Scripts\python.exe` — the system Python lacks `
 - **Intents**: `message_content` intent is enabled — must also be enabled in the Discord Developer Portal.
 - **Secrets**: `DISCORD_BOT_TOKEN` and `HF_TOKEN` must never be hardcoded; load from `.env` (gitignored).
 - **No git co-author tags**: Do not add `Co-Authored-By: Claude` lines to commits in this repo.
-- **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Video/data/`, `Translation/0-Data/Synthesized/Audio/data/`, `Translation/0-Data/Synthesized/Image/data/`, `Translation/0-Data/Synthesized/Text/data/`, `Translation/0-Data/Synthesized/Video/data/`, `Translation/0-Data/Image/training/checkpoints/`, `UserRecognition/0-Data/data/`, `Models/Datasets/char-dataset/`, `Models/Datasets/font-dataset/`, `Models/Datasets/windows-fonts/`, `Models/Datasets/chat-dataset/`, `Models/OCR/checkpoints/`, `Models/Typography/checkpoints/`, `Models/UserRecognition/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, model checkpoints, or generated datasets.
+- **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Video/data/`, `Translation/0-Data/Synthesized/Audio/data/`, `Translation/0-Data/Synthesized/Image/data/`, `Translation/0-Data/Synthesized/Text/data/`, `Translation/0-Data/Synthesized/Video/data/`, `Translation/0-Data/Image/training/checkpoints/`, `UserRecognition/0-Data/data/`, `Models/Datasets/char-dataset/`, `Models/Datasets/char-dataset-legacy/`, `Models/Datasets/font-dataset/`, `Models/Datasets/windows-fonts/`, `Models/Datasets/chat-dataset/`, `Models/OCR/checkpoints/`, `Models/Typography/checkpoints/`, `Models/UserRecognition/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, model checkpoints, or generated datasets.
 - **Test suite**: `pytest` tests exist under `Translation/1-Text/tests/`, `Translation/2-Image/tests/`, `Translation/3-Audio/tests/`, `Translation/4-Video/tests/`, `Prompt/tests/`, `UserRecognition/tests/`, `Models/UserRecognition/tests/`, and `tests/` (bot command parsing) — registered in `pytest.ini` under `testpaths`. Run with `pytest` from the repo root. All suites use mocks — no network calls, no model downloads. (284 tests collected; integration tests are marked `integration` and skip without `HF_TOKEN`.) `Models/OCR/` and `Models/Typography/` have no test coverage.
 - **Feature package layout**: every production feature follows the same shape — inference modules at the package root, `tests/` beside them, and a `0-Data/` arm holding `training/` (`collect_*.py`, `dataset.py`, `train.py`, `deploy.py`), `testing/demo.py`, and `data/`. `Translation/`, `UserRecognition/` follow it; `Prompt/` currently has inference + tests only, with no `0-Data/` collection arm.
 - **Preprocessing variants**: All six variants are available in `ocr.py`; `preprocess()` (baseline) is the production default. Use `compare_preprocess.py` to evaluate before switching. `light_denoise` is the most consistent alternative.

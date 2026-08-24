@@ -1,6 +1,6 @@
 """Dataset and dataloader construction for user recognition.
 
-Reads the splits written by Models/Datasets/build_chat.py.  Unlike the image
+Reads the splits written by Models/utils/generators/build_chat.py.  Unlike the image
 pipeline, splitting happens at dataset-build time (chronologically, per author),
 so this module never re-splits — it only loads what build_chat.py produced.
 """
@@ -103,7 +103,7 @@ def load_split(dataset_dir, split: str) -> list:
     if not p.exists():
         raise FileNotFoundError(
             f'{p} not found. Build it first:\n'
-            f'  python Models/Datasets/build_chat.py --guild <GUILD_ID>'
+            f'  python Models/utils/generators/build_chat.py --guild <GUILD_ID>'
         )
     rows = []
     with p.open(encoding='utf-8') as f:

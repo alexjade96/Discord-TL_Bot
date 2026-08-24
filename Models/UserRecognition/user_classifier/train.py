@@ -107,7 +107,7 @@ def main():
     if not dataset_dir.exists():
         raise SystemExit(
             f'[train] No dataset at {dataset_dir}\n'
-            f'        Build it first:  python Models/Datasets/build_chat.py --guild {args.guild}'
+            f'        Build it first:  python Models/utils/generators/build_chat.py --guild {args.guild}'
         )
 
     ckpt_dir = Path(args.checkpoint_dir) if args.checkpoint_dir \

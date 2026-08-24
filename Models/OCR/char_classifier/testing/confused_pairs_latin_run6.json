@@ -1,0 +1,171 @@
+{
+  "checkpoint": "C:\\Users\\alexj\\My Drive (alexander.x.yeh@gmail.com)\\Colab Notebooks\\TL-Bot\\checkpoints\\latin_ctx-small\\best.pt",
+  "checkpoint_epoch": 23,
+  "checkpoint_val_acc": 0.9023235800344234,
+  "scripts": [
+    "latin"
+  ],
+  "sample_size": 2500,
+  "sample_top1_acc": 0.9008,
+  "total_errors": 248,
+  "low_i_error_count": 13,
+  "low_i_error_fraction": 0.05241935483870968,
+  "rotation_error_count": 1,
+  "rotation_error_fraction": 0.004032258064516129,
+  "top_confused_pairs": [
+    {
+      "true": "cap_S",
+      "pred": "low_s",
+      "count": 14,
+      "flags": []
+    },
+    {
+      "true": "cap_I",
+      "pred": "low_l",
+      "count": 13,
+      "flags": []
+    },
+    {
+      "true": "low_l",
+      "pred": "cap_I",
+      "count": 9,
+      "flags": []
+    },
+    {
+      "true": "low_j",
+      "pred": "low_l",
+      "count": 8,
+      "flags": []
+    },
+    {
+      "true": "cap_Z",
+      "pred": "low_z",
+      "count": 6,
+      "flags": []
+    },
+    {
+      "true": "dig_0",
+      "pred": "cap_O",
+      "count": 6,
+      "flags": []
+    },
+    {
+      "true": "low_j",
+      "pred": "cap_I",
+      "count": 6,
+      "flags": []
+    },
+    {
+      "true": "low_w",
+      "pred": "cap_W",
+      "count": 6,
+      "flags": []
+    },
+    {
+      "true": "low_v",
+      "pred": "cap_V",
+      "count": 6,
+      "flags": []
+    },
+    {
+      "true": "dig_1",
+      "pred": "cap_I",
+      "count": 5,
+      "flags": []
+    },
+    {
+      "true": "dig_0",
+      "pred": "low_o",
+      "count": 5,
+      "flags": []
+    },
+    {
+      "true": "low_h",
+      "pred": "cap_H",
+      "count": 4,
+      "flags": []
+    },
+    {
+      "true": "low_i",
+      "pred": "low_l",
+      "count": 4,
+      "flags": [
+        "low_i"
+      ]
+    },
+    {
+      "true": "low_i",
+      "pred": "dig_1",
+      "count": 4,
+      "flags": [
+        "low_i"
+      ]
+    },
+    {
+      "true": "low_v",
+      "pred": "low_y",
+      "count": 4,
+      "flags": []
+    },
+    {
+      "true": "cap_O",
+      "pred": "low_o",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "low_j",
+      "pred": "cap_J",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "low_c",
+      "pred": "cap_C",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "cap_O",
+      "pred": "dig_0",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "low_t",
+      "pred": "low_f",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "cap_I",
+      "pred": "dig_1",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "low_x",
+      "pred": "dig_8",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "low_m",
+      "pred": "cap_M",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "low_r",
+      "pred": "cap_R",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "dig_7",
+      "pred": "low_y",
+      "count": 2,
+      "flags": []
+    }
+  ]
+}
