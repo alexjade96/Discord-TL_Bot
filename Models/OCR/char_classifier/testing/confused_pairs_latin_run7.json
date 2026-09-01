@@ -1,0 +1,169 @@
+{
+  "checkpoint": "C:\\Users\\alexj\\My Drive (alexander.x.yeh@gmail.com)\\Colab Notebooks\\TL-Bot\\checkpoints\\latin_ctx\\best.pt",
+  "checkpoint_epoch": 20,
+  "checkpoint_val_acc": 0.91143816163181,
+  "scripts": [
+    "latin"
+  ],
+  "sample_size": 2500,
+  "sample_top1_acc": 0.9124,
+  "total_errors": 219,
+  "low_i_error_count": 13,
+  "low_i_error_fraction": 0.0593607305936073,
+  "rotation_error_count": 0,
+  "rotation_error_fraction": 0.0,
+  "top_confused_pairs": [
+    {
+      "true": "cap_I",
+      "pred": "low_l",
+      "count": 19,
+      "flags": []
+    },
+    {
+      "true": "low_j",
+      "pred": "low_l",
+      "count": 8,
+      "flags": []
+    },
+    {
+      "true": "dig_0",
+      "pred": "low_o",
+      "count": 7,
+      "flags": []
+    },
+    {
+      "true": "low_i",
+      "pred": "low_j",
+      "count": 6,
+      "flags": [
+        "low_i"
+      ]
+    },
+    {
+      "true": "low_l",
+      "pred": "cap_I",
+      "count": 6,
+      "flags": []
+    },
+    {
+      "true": "cap_W",
+      "pred": "low_w",
+      "count": 5,
+      "flags": []
+    },
+    {
+      "true": "cap_I",
+      "pred": "low_j",
+      "count": 4,
+      "flags": []
+    },
+    {
+      "true": "cap_O",
+      "pred": "dig_0",
+      "count": 4,
+      "flags": []
+    },
+    {
+      "true": "low_r",
+      "pred": "cap_R",
+      "count": 4,
+      "flags": []
+    },
+    {
+      "true": "cap_Z",
+      "pred": "low_z",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "low_y",
+      "pred": "low_v",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "cap_C",
+      "pred": "low_c",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "low_o",
+      "pred": "cap_O",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "low_t",
+      "pred": "low_f",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "cap_S",
+      "pred": "low_s",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "cap_L",
+      "pred": "low_l",
+      "count": 3,
+      "flags": []
+    },
+    {
+      "true": "low_c",
+      "pred": "cap_C",
+      "count": 2,
+      "flags": []
+    },
+    {
+      "true": "dig_1",
+      "pred": "low_j",
+      "count": 2,
+      "flags": []
+    },
+    {
+      "true": "cap_L",
+      "pred": "dig_7",
+      "count": 2,
+      "flags": []
+    },
+    {
+      "true": "low_k",
+      "pred": "cap_K",
+      "count": 2,
+      "flags": []
+    },
+    {
+      "true": "dig_0",
+      "pred": "cap_O",
+      "count": 2,
+      "flags": []
+    },
+    {
+      "true": "cap_A",
+      "pred": "cap_I",
+      "count": 2,
+      "flags": []
+    },
+    {
+      "true": "low_u",
+      "pred": "cap_U",
+      "count": 2,
+      "flags": []
+    },
+    {
+      "true": "cap_D",
+      "pred": "low_d",
+      "count": 2,
+      "flags": []
+    },
+    {
+      "true": "low_s",
+      "pred": "cap_I",
+      "count": 2,
+      "flags": []
+    }
+  ]
+}

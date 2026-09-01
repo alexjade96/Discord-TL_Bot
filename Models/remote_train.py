@@ -55,20 +55,36 @@ REPO_DIR = "/content/Discord-TL_Bot"
 # to train against char-dataset-legacy (old isolated-tile pipeline) or
 # another named variant.
 #
-# IMPORTANT -- this default does NOT match Google Drive's zip names. The
-# local Models/Datasets/ rename (promoting the real-context dataset to plain
-# "char-dataset") was deliberately NOT mirrored on Drive, so DATASET_ZIP
-# below still resolves against Drive's *original* run-time names:
-#   char-dataset.zip            = legacy isolated-tile data (matches this
-#                                  module's default string, but is the WRONG
-#                                  data for a default/promoted run)
-#   char-dataset-ctx-small.zip  = run 5/6 data (what this module's default
-#                                  string is actually supposed to mean)
-#   char-dataset-ctx.zip        = full/uncapped variant (run 7+)
-# Any remote/Colab session MUST pass --dataset-name explicitly matching the
-# Drive zip it actually wants -- do not rely on this module's default when
-# running against Drive. colab_train.ipynb's Cell 1 sets DATASET_NAME
-# explicitly for exactly this reason; keep it explicit there too.
+# DRIVE ZIP NAMING (updated 2026-09-01 -- kana/hangul/cjk real-context migration):
+# The local Models/Datasets/ rename that promoted the real-context dataset to
+# plain "char-dataset" was originally NOT mirrored on Drive, which left
+# char-dataset.zip on Drive still holding *legacy isolated-tile* data. As part
+# of the kana/hangul/cjk migration that divergence is being CLOSED: a new
+# char-dataset.zip -- real-context, all four scripts (latin+kana+hangul+cjk,
+# rendered by render_chars_context.py with --extra-fonts-dir
+# Models/Datasets/google-fonts for CJK coverage) -- replaces the legacy zip on
+# Drive. This is a one-time, deliberate break of the "frozen Drive names" rule,
+# made because keeping a char-dataset.zip full of legacy data while local
+# char-dataset/ is real-context is the exact footgun that rule was meant to
+# prevent, and it only gets worse with three more scripts in play.
+#
+# Post-migration Drive zip map:
+#   char-dataset.zip            = real-context, ALL four scripts (the promoted
+#                                  default -- this module's default string now
+#                                  means what it says)
+#   char-dataset-ctx-small.zip  = run 5/6 Latin-only downsampled real-context
+#                                  (kept for run 5/6 checkpoint retrieval)
+#   char-dataset-ctx.zip        = run 7 Latin-only full/uncapped real-context
+#                                  (kept; open question in FINDINGS.md whether
+#                                  char-dataset/latin/ gets regenerated from
+#                                  this uncapped pipeline to match run 7)
+#   (legacy isolated-tile data no longer lives on Drive -- it is local-only as
+#    Models/Datasets/char-dataset-legacy/, re-zippable on demand if ever needed
+#    for an archived run 1-4 checkpoint.)
+#
+# Until the new char-dataset.zip is uploaded, a Latin run still needs
+# --dataset-name char-dataset-ctx explicitly; once it is up, the notebooks can
+# drop the explicit DATASET_NAME and fall back to this default.
 DATASET_NAME = "char-dataset"
 
 # Path to a zipped copy of the dataset on Drive.

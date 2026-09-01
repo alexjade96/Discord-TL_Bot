@@ -495,24 +495,36 @@ Models/
   utils/
     generators/
       render_chars.py         ← generates ../../Datasets/char-dataset-legacy (isolated
-                                 centered-glyph tiles, v1 pipeline; kana/hangul/cjk still
-                                 use this)
+                                 centered-glyph tiles, v1 pipeline; frozen — not
+                                 regenerated). Also holds the shared font helpers
+                                 (copy_system_fonts, build_font_meta, iter_font_faces,
+                                 extract_cmap) that render_chars_context.py imports;
+                                 these now expand .ttc/.otc collection faces.
       render_chars_context.py ← generates ../../Datasets/char-dataset (string-render +
                                  target-glyph crop, v2 pipeline; Latin default as of
-                                 run 6, see Models/OCR/FINDINGS.md)
+                                 run 6; kana/hangul/cjk migration started runs 8+, see
+                                 Models/OCR/FINDINGS.md). --extra-fonts-dir pulls in
+                                 Models/Datasets/google-fonts/ (Noto Sans CJK) for
+                                 kana/hangul/cjk coverage.
       get_fonts.py            ← scans Windows fonts → ../../Datasets/font-dataset/
                                  (font classifier)
       build_chat.py           ← generates ../../Datasets/chat-dataset from collected
                                  Discord history
       sample_tilegrid_gen.py  ← visual sanity check for grid augments
   Datasets/
-    char-dataset/           ← Latin: real string-rendered context (v2, promoted default)
+    char-dataset/           ← real string-rendered context (v2, promoted default).
+                               latin/ present; kana/hangul/cjk to be generated in
+                               the runs-8+ migration (real-context, Noto-backed)
+    char-dataset-ctx/        ← Latin-only full/uncapped v2 variant (run 7)
     char-dataset-legacy/    ← isolated centered-glyph tiles (v1, retained for
                                retrieval against archived run 1-4 checkpoints)
       latin/    ← (legacy) 62 classes, 77,799 images
       kana/     ← 169 viable / 172 total classes, 2,036 images
       hangul/   ← 500 classes, 6,000 images
       cjk/      ← 1,312 viable / 3,000 total classes, 10,506 images
+    google-fonts/          ← Noto Sans CJK OTFs (28 files: 7 weights × jp/kr/sc/tc)
+                               for kana/hangul/cjk generation; gitignored, generic
+                               name for future Google font additions
     font-dataset/          ← 21,676 images (get_fonts.py output)
     chat-dataset/
       {guild_id}/          ← train/val/test.jsonl, label_map.json, meta.json
@@ -559,9 +571,10 @@ Production feature code never lives under `Models/`. Each `Models/<Area>/` is th
 
 #### char-dataset-legacy notes
 
-- CJK: only 1,312 of 3,000 classes have ≥ 5 images; the rest are skipped by `build_dataset`. Most CJK classes have 3–4 images because many Windows fonts lack full Joyo coverage. Viable CJK classes contribute ~7,354 training samples.
+- CJK: only 1,312 of 3,000 classes have ≥ 5 images; the rest are skipped by `build_dataset`. Most CJK classes have 3–4 images because many Windows fonts lack full Joyo coverage — and because the legacy generator's `copy_system_fonts()` skipped `.ttc` collections entirely (fixed for the v2 pipeline; see below). Viable CJK classes contribute ~7,354 training samples.
 - Kana: 3 of 172 classes empty (U+3094/3095/3096 are obsolete kana not in Windows fonts).
 - Latin (legacy only — Latin now trains on `char-dataset`, the real-context v2 pipeline): 77,799 images across 62 classes.
+- These sparse counts are what the runs-8+ real-context migration addresses: the v2 generator now reads `.ttc`/`.otc` faces and takes `--extra-fonts-dir Models/Datasets/google-fonts` (Noto Sans CJK), which alone gives full coverage of every kana / top-500 hangul / top-3000 CJK class in 7 weights × 4 regional variants.
 
 #### chat-dataset (`utils/generators/build_chat.py`)
 
@@ -628,10 +641,15 @@ Writes `config.json` at training start so `compare.py` can reload the correct ba
 # Per-script full runs (GPU recommended)
 # Latin: char-dataset (real-context, promoted default) + grid-mode none (also the default -- shown for clarity)
 .\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin  --epochs 30 --freeze-epochs 5 --grid-mode none --backbone dinov2_vits14 --batch-size 64
-# kana/hangul/cjk: still on the legacy isolated-tile pipeline, not yet migrated to real-context
+# kana/hangul/cjk: legacy isolated-tile pipeline (current trained state).
 .\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts kana   --dataset-name char-dataset-legacy --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
 .\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts hangul --dataset-name char-dataset-legacy --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
 .\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts cjk    --dataset-name char-dataset-legacy --epochs 30 --freeze-epochs 5 --grid-mode all --backbone dinov2_vits14 --batch-size 64
+# kana/hangul/cjk real-context migration (runs 8+, in progress): first generate the data
+#   cd Models/utils/generators/
+#   .venv\Scripts\python.exe render_chars_context.py --scripts kana hangul cjk --extra-fonts-dir ../../Datasets/google-fonts
+# then train against char-dataset/ (the default) with the warm-restart scheduler and no grid tiling:
+#   .venv\Scripts\python.exe -m char_classifier.train --scripts kana --epochs 36 --freeze-epochs 3 --scheduler cosine-warm --backbone dinov2_vits14 --batch-size 64
 
 # Resume from checkpoint
 .\..\..\.venv\Scripts\python.exe -m char_classifier.train --scripts latin --resume checkpoints/latin/best.pt
@@ -639,7 +657,9 @@ Writes `config.json` at training start so `compare.py` can reload the correct ba
 
 `--grid-mode` options: `none` (skip grid tiling entirely — **default**; correct for datasets whose tiles already carry real string context, e.g. the default `char-dataset`/`render_chars_context.py` output, where tiling on top would redundantly re-tile already-real context and was confirmed actively harmful, see `Models/OCR/FINDINGS.md`), `single` (TileGrid3x3 only), `rotated` (3x3 or 3x3Rotated per sample), `all` (random choice among all 6 variants — appropriate only for isolated-glyph datasets like `char-dataset-legacy`). All 6 variants: TileGrid3x3, TileGrid3x3Rotated, TileGrid3x3Pair, TileGrid3x3PairRotated, TileGrid3x3Orbital, TileGrid3x3OrbitalRotated (defined in `grid_augments.py`).
 
-**Training state:** Latin has a promoted checkpoint from run 6 (`char-dataset` real-context data, `grid_mode=none`, best val_acc **0.9023** @ epoch 23/24) — see `Models/OCR/FINDINGS.md` § "Latin Tile-Context Investigation (Runs 3-6)" for the full run 3-6 history. Run 7 (same config, full uncapped dataset variant + longer epoch budget) is in progress via `Models/colab_train.ipynb`. Kana/hangul/cjk have no checkpoint yet and still train on the legacy isolated-tile pipeline (`char-dataset-legacy`, `grid_mode=all` per the example commands above) pending their own real-context migration.
+**Training state:** Latin's promoted checkpoint is run 7's `latin_ctx/best.pt` (`char-dataset-ctx` full/uncapped real-context data, `grid_mode=none`, best val_acc **0.911438** @ epoch 20/36) — it superseded run 6's `latin_ctx-small/best.pt` (0.9023) by +0.92 pt val_acc with the targeted `low_i` stroke-fragment pathology holding at its run-6 floor (13 errors, no regression). See `Models/OCR/FINDINGS.md` § "Latin Tile-Context Investigation (Runs 3-7)" for the full history and the run-7 conclusions (uncapped data helps only marginally; ~24-28 epochs is enough for this config — do not budget 36). Run 7 confirmed complete via `Models/colab_train.ipynb` (Drive `checkpoints/latin_ctx/`); the promoted default for *new* runs stays plain `char-dataset` pending a separate decision on bumping it to the uncapped variant.
+
+**Kana/hangul/cjk real-context migration (runs 8+, started 2026-09-01):** these three scripts are being moved off the legacy isolated-tile pipeline onto real-context data, the same change that fixed Latin. `render_chars_context.py` already accepts `--scripts kana|hangul|cjk`; the blocker was font coverage. Two fixes landed: (1) `render_chars.py`'s `copy_system_fonts()` now includes `.ttc`/`.otc` collections (`build_font_meta` / `iter_font_faces` expand each collection's faces separately) — Windows CJK fonts like MS Gothic, Microsoft YaHei, YuGothic, MingLiU, MS JhengHei are `.ttc`-only and were silently skipped before, starving CJK of fonts; (2) Noto Sans CJK (28 OTFs, 7 weights × jp/kr/sc/tc, full coverage of every kana / top-500 hangul / top-3000 CJK class) added under `Models/Datasets/google-fonts/` (gitignored), passed to the generators via `--extra-fonts-dir Models/Datasets/google-fonts`. Real-context kana/hangul/cjk data will be generated into `char-dataset/` alongside `char-dataset/latin/`, and a refreshed all-scripts `char-dataset.zip` will replace the legacy isolated-tile zip on Drive (a deliberate one-time break of the frozen-Drive-names rule — see `Models/remote_train.py`'s DATASET_NAME comment). Per-script runs should use `--scheduler cosine-warm` and ~30-40 epochs, `grid_mode` left at the `none` default. **Data generation and training not yet done** — until the refreshed zip is uploaded, kana/hangul/cjk still have no real-context checkpoint and the legacy `char-dataset-legacy` + `grid_mode=all` path (per the example commands above) remains the only trained option.
 
 #### `segment.py` — column-projection character segmenter
 

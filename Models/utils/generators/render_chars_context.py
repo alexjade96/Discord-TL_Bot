@@ -42,7 +42,7 @@ from tqdm import tqdm
 from render_chars import (
     CHARSETS, CHARSET_SCRIPTS, SCRIPT_NAMES,
     _build_kana, _build_hangul, _build_cjk,
-    copy_system_fonts, collect_extra_fonts, extract_cmap,
+    copy_system_fonts, collect_extra_fonts, build_font_meta,
 )
 
 _HERE            = Path(__file__).parent.parent.parent / 'Datasets'  # Models/Datasets/
@@ -153,17 +153,19 @@ def render_charset_context(font_meta: list, charset: list, update: bool, script:
         out_dir.mkdir(parents=True, exist_ok=True)
         cp = ord(ch)
 
-        for font_path, family, style, cmap_set in font_meta:
+        for font_path, face_idx, family, style, cmap_set in font_meta:
             if cp not in cmap_set:
                 continue
 
-            if font_path not in font_cache:
+            cache_key = (font_path, face_idx)
+            if cache_key not in font_cache:
                 try:
-                    font_cache[font_path] = ImageFont.truetype(font_path, RENDER_SIZE_PT)
+                    font_cache[cache_key] = ImageFont.truetype(
+                        font_path, RENDER_SIZE_PT, index=face_idx)
                 except Exception:
                     skipped_fonts.add(font_path)
-                    font_cache[font_path] = None
-            font = font_cache[font_path]
+                    font_cache[cache_key] = None
+            font = font_cache[cache_key]
             if font is None:
                 continue
 
@@ -253,17 +255,18 @@ def main():
     import os
     font_files = [
         os.path.join(fonts_root, f) for f in os.listdir(fonts_root)
-        if f.lower().endswith(('.ttf', '.otf', '.ttc'))
+        if f.lower().endswith(('.ttf', '.otf', '.ttc', '.otc'))
     ]
     if args.extra_fonts_dir:
         font_files += collect_extra_fonts(args.extra_fonts_dir)
     print(f'[render_chars_context] {len(font_files)} font files found')
 
     print('Scanning font cmaps (once) ...')
-    font_meta = []
-    for fp in tqdm(font_files, desc='  Loading fonts', leave=False):
-        fam, sty, cmap = extract_cmap(fp)
-        font_meta.append((fp, fam, sty, cmap))
+    # build_font_meta expands .ttc/.otc collections into their component faces
+    # (each a 5-tuple with a face index) -- see render_chars.py. .ttf/.otf still
+    # yield exactly one face, so latin output is unchanged.
+    font_meta = build_font_meta(font_files)
+    print(f'[render_chars_context] {len(font_meta)} font faces with a usable cmap')
 
     for script, charset in jobs:
         print(f'\n[render_chars_context] [{script}] {len(charset)} classes')
