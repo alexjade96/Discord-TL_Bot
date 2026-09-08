@@ -209,7 +209,7 @@ Run 7 confirmed the uncapped `char-dataset-ctx` beats the downsampled `char-data
 
 ### Runs 8+: kana/hangul/cjk real-context migration (started 2026-09-01)
 
-The isolated-tile → real-context pivot that fixed Latin (runs 3-7) is being applied to kana/hangul/cjk. Status: **code + config + docs done; data generation and training not yet run.**
+The isolated-tile → real-context pivot that fixed Latin (runs 3-7) is being applied to kana/hangul/cjk. Status: **data generated and on Drive; kana trained (run 8, below); hangul + cjk pending.**
 
 What was already in place: `render_chars_context.py` already dispatches `--scripts kana|hangul|cjk` (reusing `_build_kana`/`_build_hangul`/`_build_cjk` from `render_chars.py`); its render loop is script-agnostic. `train.py` / `remote_train.py` already accept those scripts and scope `checkpoints/<script>/` per script. The handoff's framing ("needs `render_chars_context.py` extended to those character sets") was stale.
 
@@ -221,6 +221,28 @@ The actual blocker was **font coverage**, fixed two ways:
 Smoke test (kana, `--variants-per-slot 1`, system fonts + Noto): 362 font files → **385 font faces with usable cmaps** (the extra faces are `.ttc` sub-faces previously skipped); **19,582 kana images / 172 classes ≈ 114/class**, vs legacy kana's ~12/class. Exit 0, `--update`-idempotent filenames intact.
 
 Recommended per-script training config (few-shot regime — rougher loss surface, noisy tiny val sets): `--scheduler cosine-warm`, `--freeze-epochs 3`, ~30-40 epochs, `grid_mode` left at the `none` default (real string context makes `TileGrid3x3` redundant and, per run 6, actively harmful on every script). The five platform notebooks carry a "Runs 8+" history paragraph and per-script guidance in Cell 1.
+
+#### Run 8 — kana (real-context, complete 2026-09-05)
+
+First non-Latin real-context run. Config: `--scripts kana --epochs 36 --freeze-epochs 3 --unfreeze-blocks 4 --batch-size 64 --backbone dinov2_vits14 --grid-mode none --mixup-alpha 0.2 --scheduler cosine-warm --lr 3e-4 --dataset-name char-dataset`. Colab T4, ~485-540 s/epoch (~5 hrs wall). Data: refreshed `char-dataset.zip` (real-context, Noto-backed), **172 classes** (all kana including the 3 obsolete `hira_3094/3095/3096` legacy never rendered), ~39,164 images, 70/15/15 split → 429 train batches/epoch. Checkpoint dir `checkpoints/kana/`.
+
+**Results:**
+
+| Metric | Value |
+|---|---|
+| best val_acc | **0.7115 @ epoch 36** (last epoch — still climbing, delta +0.0066) |
+| val F1 macro @ best | 0.7308 (peak val F1 was 0.7486 @ epoch 26) |
+| **test top-1 / top-3 / top-5** (`best.pt`) | **0.7180 / 0.7799 / 0.8054** |
+| test macro precision / recall / f1 | 0.79 / 0.72 / 0.74 (support 5,875) |
+| overfit_gap | ~ -0.30 (train_acc 0.41 vs val_acc 0.71 — no overfit; val > train from mixup + heavy aug) |
+
+**cosine-warm restart effect:** first cosine cycle peaked at **0.7025 @ epoch 18**; the warm restart fired epoch 19 (LR 3.3e-6 → 3.0e-4), val_acc dipped to 0.668 @ epoch 20, then the second cycle climbed steadily to 0.7115 @ epoch 36. Net gain from the restart: **+0.9 pt** over the epoch-18 peak, matching the small post-restart gains seen in the Latin runs. val_acc was still rising at epoch 36 — a longer budget or a third restart might add a little more. For a repeat kana run, budget ~40-48 epochs (unlike Latin's run-7 finding of ~24-28; kana had not converged at 36).
+
+**Failure modes (test-split, classes with f1 < 0.55):**
+- **Small (sutegana) kana collapse** — the recurring pathology, analogous to Latin's `low_i` stroke-fragment issue. `kata_30a1` (small ア) f1 **0.18** (precision 0.10 — heavy over-prediction sink); `kata_30c3` (small ッ) 0.47; `kata_30e7`-family small ャ/ュ/ョ (`30e6` small ュ context 0.53, `30e8` small ョ 0.54); `kata_30ee` (small ヮ) 0.47; `hira_3045` (small ぇ) 0.33; `hira_3095/3096` (obsolete small kana) 0.49/low. Small kana differ from their full-size counterparts only in scale, which the target-glyph crop partially normalizes away.
+- **Near-homoglyph hira/kata pairs** — top confused pairs: `kata_30f1` (ヱ) → `kata_30e6` (12), `hira_3045` → `hira_3046` (12), `hira_305b` (せ) → `kata_30b6` (ゼ) (10), `kata_30da`↔`hira_307a` (ペ/ぺ, 9+7), `kata_30d8`↔`hira_3078` (ヘ/へ, 9), `kata_30d9`↔`hira_3079` (ベ/べ, 7). The へ/ヘ hiragana-katakana pair is nearly identical by design; these are expected and not a regression signal.
+
+No isolated-tile-style catastrophic collapse (no class at ~0% top-1). The floor is the small-kana f1≈0.2-0.5 band, not a zero.
 
 ### Remaining items after run 7
 

@@ -23,12 +23,53 @@ Bootstrap (paste into a fresh Colab terminal before the repo is cloned):
 """
 
 import argparse
+import hashlib
+import json
 import os
 import shutil
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
+
+# Name of the per-script signature file written into every dataset zip by
+# zip_dataset() and consulted by sync_dataset() before it skips an extraction.
+DATASET_MANIFEST_NAME = ".dataset-manifest.json"
+
+
+def _script_signature(script_dir: Path) -> str:
+    """
+    A content signature for one script's dataset subdir: sha256 over the sorted
+    list of (posix relpath, size) for every file under it. Metadata only, no file
+    reads, so it is fast on 100k+ files and still changes whenever the file set,
+    any filename, or any file size changes -- enough to tell a stale legacy
+    extraction apart from the current real-context one. It will NOT notice a
+    same-size byte edit to an image; that is not a failure mode we guard against.
+    """
+    h = hashlib.sha256()
+    for f in sorted(script_dir.rglob("*")):
+        if f.is_file():
+            rel = f.relative_to(script_dir).as_posix()
+            h.update(f"{rel}\0{f.stat().st_size}\0".encode("utf-8"))
+    return h.hexdigest()
+
+
+def _build_manifest(subdirs) -> dict:
+    """{'scripts': {name: sig}, 'generator_commit': <sha|unknown>, 'built_at': <iso>}."""
+    import datetime
+
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(Path(__file__).parent), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip() or "unknown"
+    except Exception:
+        commit = "unknown"
+    return {
+        "scripts": {d.name: _script_signature(d) for d in subdirs},
+        "generator_commit": commit,
+        "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
 
 # ============================================================
 # CONFIG — edit these to match your setup
@@ -236,29 +277,77 @@ def install_deps():
               "(char_classifier does not import these).")
 
 
+def _load_manifest_from_dir(local_root: Path) -> dict:
+    p = local_root / DATASET_MANIFEST_NAME
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return {}
+
+
+def _load_manifest_from_zip(zip_path: Path) -> dict:
+    """The manifest is written at '<DATASET_NAME>/.dataset-manifest.json' in the archive."""
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            for name in zf.namelist():
+                if Path(name).name == DATASET_MANIFEST_NAME:
+                    return json.loads(zf.read(name))
+    except Exception:
+        pass
+    return {}
+
+
 def sync_dataset():
     """
     Copy the dataset (DATASET_NAME) from Drive to fast VM-local SSD.
-    Skipped if all required script subdirs already exist locally and are populated.
+
+    Skipped only when every required script's on-disk content signature matches
+    the one recorded in the zip's manifest. A bare "the dir exists and is
+    non-empty" check is not enough: a zip replaced in place on Drive, or a stale
+    legacy script dir left by an earlier session's extraction, both pass that
+    check and silently train the run on the wrong data. If the zip carries no
+    manifest (pre-2026-09 archives), fall back to the existence check with a
+    warning -- no protection, but no regression either.
+
     Prefers DATASET_ZIP; falls back to a plain directory at DRIVE_ROOT/<DATASET_NAME>/.
     """
     local_root = Path(REPO_DIR) / "Models" / "Datasets" / DATASET_NAME
     scripts_needed = (
         {"latin", "kana", "hangul", "cjk"} if "all" in SCRIPTS else set(SCRIPTS)
     )
+    zip_path = Path(DATASET_ZIP) if DATASET_ZIP else None
 
-    def _populated(script: str) -> bool:
-        # Existence alone is not enough: an extraction killed partway leaves the
-        # dir behind, and a bare is_dir() check would let the next run train on
-        # a fraction of the data without saying so.
+    def _nonempty(script: str) -> bool:
         d = local_root / script
         return d.is_dir() and any(d.iterdir())
 
-    if all(_populated(s) for s in scripts_needed):
-        print(f"[setup] Dataset already present at {local_root} - skipping sync.")
-        return
+    zip_manifest = _load_manifest_from_zip(zip_path) if (zip_path and zip_path.exists()) else {}
+    zip_sigs = zip_manifest.get("scripts", {})
 
-    zip_path = Path(DATASET_ZIP) if DATASET_ZIP else None
+    if zip_sigs:
+        disk_sigs = _load_manifest_from_dir(local_root).get("scripts", {})
+        stale = sorted(
+            s for s in scripts_needed
+            if not _nonempty(s)
+            or s not in disk_sigs
+            or s not in zip_sigs
+            or disk_sigs[s] != zip_sigs[s]
+        )
+        if not stale:
+            print(f"[setup] Dataset signatures match manifest for {sorted(scripts_needed)} "
+                  f"- skipping sync.")
+            return
+        print(f"[setup] Re-syncing: these scripts are missing or do not match the "
+              f"zip manifest: {stale}")
+    else:
+        if zip_path and zip_path.exists():
+            print("[setup] WARNING: dataset zip has no manifest - falling back to an "
+                  "existence check only. A replaced-in-place zip cannot be detected. "
+                  "Rebuild the zip with --zip-dataset to enable signature checking.")
+        if all(_nonempty(s) for s in scripts_needed):
+            print(f"[setup] Dataset already present at {local_root} - skipping sync.")
+            return
+
     if zip_path and zip_path.exists():
         print(f"[setup] Extracting {zip_path} -> {local_root.parent} ...")
         local_root.parent.mkdir(parents=True, exist_ok=True)
@@ -272,6 +361,12 @@ def sync_dataset():
         # second time". zipfile reads the central directory only, so the whole
         # warning class disappears. It also drops the dependency on an external
         # unzip binary, matching how cell 2 already extracts on Kaggle.
+        # A fresh extraction must land on clean dirs: leftover files from a stale
+        # earlier extraction (different zip) would otherwise survive alongside the
+        # new ones and the signature check below would still fail.
+        for s in scripts_needed:
+            if (local_root / s).is_dir():
+                shutil.rmtree(local_root / s)
         with zipfile.ZipFile(zip_path) as zf:
             names = zf.namelist()
             for i, name in enumerate(names, 1):
@@ -280,11 +375,21 @@ def sync_dataset():
                     print(f"  {i}/{len(names)} files ...", flush=True)
         print(f"[setup] Extracted {len(names)} files.")
 
-        missing = sorted(s for s in scripts_needed if not _populated(s))
+        missing = sorted(s for s in scripts_needed if not _nonempty(s))
         if missing:
             print(f"\n[setup] ERROR: extraction finished but these script dirs "
                   f"are missing under {local_root}: {missing}")
             sys.exit(1)
+        if zip_sigs:
+            bad = sorted(
+                s for s in scripts_needed
+                if _script_signature(local_root / s) != zip_sigs.get(s)
+            )
+            if bad:
+                print(f"\n[setup] ERROR: extraction finished but these scripts do not "
+                      f"match the zip manifest signature: {bad}. The archive may be "
+                      f"corrupt or was written by an incompatible zip_dataset().")
+                sys.exit(1)
     else:
         drive_dir = Path(DRIVE_ROOT) / DATASET_NAME
         if drive_dir.exists():
@@ -363,6 +468,19 @@ def zip_dataset(output_path: str = None, scripts: list = None, dataset_name: str
                     written += 1
                     if written % 5000 == 0:
                         print(f"  {written}/{total_files} files ...")
+
+        # Per-script signature file at the archive root. sync_dataset() compares
+        # this against the copy left on the VM by a previous extraction and
+        # re-extracts any script whose signature differs or is absent, so a zip
+        # replaced in place on Drive (or a stale legacy script dir) can no longer
+        # be silently skipped.
+        print("[zip] Building manifest ...")
+        manifest = _build_manifest(subdirs)
+        zf.writestr(
+            f"{dataset_name}/{DATASET_MANIFEST_NAME}",
+            json.dumps(manifest, indent=2),
+        )
+        print(f"[zip] Manifest: {manifest['scripts']}")
 
     size_mb = out.stat().st_size / 1024 / 1024
     print(f"[zip] Done: {written} files, {size_mb:.1f} MB -> {out}")
