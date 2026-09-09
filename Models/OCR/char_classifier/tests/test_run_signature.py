@@ -128,6 +128,47 @@ class TestArchiveDecision:
         assert reason['reason'] == 'fresh_restart'
         assert not (ckpt_dir / 'last.pt').exists()
 
+    def test_resume_git_commit_only_change_does_not_archive(self, tmp_path):
+        # A run at epoch 35/36 was lost when the only diff between the checkpoint
+        # and the pulled code was the commit hash (a docs + remote_train.py
+        # infra commit). git_commit must not, on its own, trigger an archive.
+        ckpt_dir = tmp_path / 'checkpoints' / 'hangul'
+        old_config = {**train._build_signature(make_args(scheduler='cosine-warm'), ['hangul']),
+                      'git_commit': 'a9bed5aae2'}
+        write_prior_run(ckpt_dir, old_config, completed_epoch=35)
+
+        args = make_args(resume=str(ckpt_dir / 'last.pt'), scheduler='cosine-warm')
+        # Same training plan, newer code checkout.
+        new_sig = {**train._build_signature(args, ['hangul']), 'git_commit': 'e7a20ca45f'}
+
+        train._check_and_archive_stale_run(ckpt_dir, ['hangul'], args, new_sig)
+
+        assert not (ckpt_dir.parent / 'archive').exists()
+        assert (ckpt_dir / 'last.pt').exists()
+        assert args.resume == str(ckpt_dir / 'last.pt')  # resume still armed
+
+    def test_resume_real_mismatch_with_git_change_archives_without_git_field(self, tmp_path):
+        # A genuine signature change still archives; the accompanying commit-hash
+        # change is not itself recorded as a mismatched field.
+        ckpt_dir = tmp_path / 'checkpoints' / 'latin'
+        old_config = {**train._build_signature(make_args(), ['latin']),
+                      'grid_mode': 'all', 'git_commit': 'aaa1111111'}
+        write_prior_run(ckpt_dir, old_config, completed_epoch=23)
+
+        args = make_args(resume=str(ckpt_dir / 'last.pt'), grid_mode='single')
+        new_sig = {**train._build_signature(args, ['latin']), 'git_commit': 'bbb2222222'}
+
+        train._check_and_archive_stale_run(ckpt_dir, ['latin'], args, new_sig)
+
+        archive_root = ckpt_dir.parent / 'archive' / 'latin'
+        run_dir = next(iter(archive_root.iterdir()))
+        reason = json.loads((run_dir / 'archive.json').read_text())
+        assert reason['reason'] == 'resume_signature_mismatch'
+        fields = {m['field'] for m in reason['mismatched_fields']}
+        assert 'grid_mode' in fields
+        assert 'git_commit' not in fields
+        assert args.resume is None
+
     def test_legacy_config_resume_no_archive(self, tmp_path):
         ckpt_dir = tmp_path / 'checkpoints' / 'latin'
         legacy_config = {'backbone': 'dinov2_vits14', 'scripts': ['latin'],

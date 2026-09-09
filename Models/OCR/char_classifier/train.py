@@ -129,9 +129,13 @@ def parse_args():
 
 
 def _git_commit_hash() -> str:
-    """Short commit hash of the checked-out code, or 'unknown'. Catches plan
-    changes that aren't CLI flags at all (e.g. an augmentation edit in
-    data.py) -- anything reachable only by pulling new code."""
+    """Short commit hash of the checked-out code, or 'unknown'. Recorded in
+    config.json as an audit field and as the marker that a config was written
+    by this feature. It is NOT a stale-run trigger: a commit-hash change on
+    its own (all _SIGNATURE_KEYS still matching) logs a note and the resume
+    proceeds. A genuine plan change reachable only by pulling new code (e.g. an
+    augmentation edit in data.py) should be promoted to a _SIGNATURE_KEYS field
+    so it is compared explicitly."""
     try:
         out = subprocess.run(
             ['git', 'rev-parse', '--short=10', 'HEAD'],
@@ -179,12 +183,14 @@ def _check_and_archive_stale_run(ckpt_dir: Path, scripts, args, signature: dict)
          of whether the config matches.
       B. Resuming, but the prior config.json (written under this feature --
          has a 'git_commit' key) disagrees with the current signature on
-         any compared field -- archives, then clears args.resume so the
-         rest of main() proceeds as a fresh run: the checkpoint being
+         any _SIGNATURE_KEYS field -- archives, then clears args.resume so
+         the rest of main() proceeds as a fresh run: the checkpoint being
          resumed from is itself in the file set that just got archived.
+         A git_commit-only difference does NOT trigger this (it is logged
+         and the resume proceeds) -- see the note at the comparison below.
 
-    Otherwise (resuming with a match, no prior artifacts, or a legacy
-    config.json predating this feature) -- does nothing.
+    Otherwise (resuming with a signature match, no prior artifacts, or a
+    legacy config.json predating this feature) -- does nothing.
     """
     from datetime import datetime
 
@@ -208,9 +214,19 @@ def _check_and_archive_stale_run(ckpt_dir: Path, scripts, args, signature: dict)
             old_val, new_val = prior_config.get(key), signature.get(key)
             if old_val != new_val:
                 mismatched_fields.append({'field': key, 'old': old_val, 'new': new_val})
+        # git_commit is recorded in config.json (and is the marker above that a
+        # config was written by this feature) but is deliberately NOT a mismatch
+        # trigger. Every training-plan input is already an explicit _SIGNATURE_KEYS
+        # field; a bare commit-hash change usually means an unrelated edit (docs,
+        # remote_train.py's dataset sync, a notebook config string) and must not
+        # archive a mid-run checkpoint on the next --resume. A run at epoch 35/36
+        # was lost this way: the only diff was a9bed5a -> e7a20ca, a docs+infra
+        # commit. If new pulled code really does change training semantics, that
+        # belongs in a signature field, not here.
         old_hash, new_hash = prior_config.get('git_commit'), signature.get('git_commit')
         if old_hash not in (None, 'unknown') and new_hash not in (None, 'unknown') and old_hash != new_hash:
-            mismatched_fields.append({'field': 'git_commit', 'old': old_hash, 'new': new_hash})
+            print(f'[train] Note: code commit changed since the checkpoint was written '
+                  f'({old_hash} -> {new_hash}); resuming anyway (training-plan signature matches).')
         if mismatched_fields:
             reason = 'resume_signature_mismatch'
 
