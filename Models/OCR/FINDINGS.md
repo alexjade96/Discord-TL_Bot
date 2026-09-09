@@ -209,7 +209,7 @@ Run 7 confirmed the uncapped `char-dataset-ctx` beats the downsampled `char-data
 
 ### Runs 8+: kana/hangul/cjk real-context migration (started 2026-09-01)
 
-The isolated-tile → real-context pivot that fixed Latin (runs 3-7) is being applied to kana/hangul/cjk. Status: **data generated and on Drive; kana trained (run 8, below); hangul + cjk pending.**
+The isolated-tile → real-context pivot that fixed Latin (runs 3-7) is being applied to kana/hangul/cjk. Status: **data generated and on Drive; kana trained (run 8) and hangul trained (run 9), both below; cjk (run 10) pending.**
 
 What was already in place: `render_chars_context.py` already dispatches `--scripts kana|hangul|cjk` (reusing `_build_kana`/`_build_hangul`/`_build_cjk` from `render_chars.py`); its render loop is script-agnostic. `train.py` / `remote_train.py` already accept those scripts and scope `checkpoints/<script>/` per script. The handoff's framing ("needs `render_chars_context.py` extended to those character sets") was stale.
 
@@ -243,6 +243,34 @@ First non-Latin real-context run. Config: `--scripts kana --epochs 36 --freeze-e
 - **Near-homoglyph hira/kata pairs** — top confused pairs: `kata_30f1` (ヱ) → `kata_30e6` (12), `hira_3045` → `hira_3046` (12), `hira_305b` (せ) → `kata_30b6` (ゼ) (10), `kata_30da`↔`hira_307a` (ペ/ぺ, 9+7), `kata_30d8`↔`hira_3078` (ヘ/へ, 9), `kata_30d9`↔`hira_3079` (ベ/べ, 7). The へ/ヘ hiragana-katakana pair is nearly identical by design; these are expected and not a regression signal.
 
 No isolated-tile-style catastrophic collapse (no class at ~0% top-1). The floor is the small-kana f1≈0.2-0.5 band, not a zero.
+
+#### Run 9 — hangul (real-context, complete 2026-09-09)
+
+Config: `--scripts hangul --epochs 36 --freeze-epochs 3 --unfreeze-blocks 4 --batch-size 64 --backbone dinov2_vits14 --grid-mode none --mixup-alpha 0.2 --scheduler cosine-warm --lr 3e-4 --dataset-name char-dataset`. Kaggle T4, ~740-900 s/epoch (slower ~835-900 s in the second cosine cycle), ~8 h wall across two sessions. Data: real-context `char-dataset.zip` (Noto-backed), **500 classes** (top-500 hangul syllables), ~62,000 images, 70/15/15 split → ~680 train batches/epoch, 9,300 test images (~18.6/class). Checkpoint dir `checkpoints/hangul/`.
+
+The run was interrupted at epoch 35/36 and re-run. The first restart archived the whole run instead of resuming: `train.py`'s `_check_and_archive_stale_run` treated the `git_commit` change from the intervening `e7a20ca` docs+infra commit as a training-plan mismatch (all 18 `_SIGNATURE_KEYS` matched exactly; `git_commit` was the sole diff). Fixed in `09938ca` — a bare commit-hash change no longer triggers the archive. The epoch-35 checkpoint was restored from `checkpoints/archive/hangul/20260909_run1_epoch35/` and resumed to completion.
+
+**Results:**
+
+| Metric | Value |
+|---|---|
+| best val_acc | **0.791935 @ epoch 35** (epoch 36 identical, delta 0.0 — converged/flat) |
+| val F1 macro @ best epoch | 0.8023 (epoch 36: 0.8017) |
+| **test top-1 / top-3 / top-5** (`best.pt`) | **0.8005 / 0.8896 / 0.9218** |
+| test macro precision / recall / f1 | 0.86 / 0.80 / 0.81 (support 9,300) |
+| overfit_gap | ~ -0.40 (train_acc 0.40 vs val_acc 0.79 — no overfit; val > train from mixup + heavy aug) |
+
+Test top-1 (0.8005) landed **above** val_acc (0.7919) — the 15% test split is a shade easier than the 15% val split at 500 classes; not a concern.
+
+**cosine-warm restart effect:** first cosine cycle peaked at **0.7828 @ epoch 13**, then flattened (0.778-0.783) as LR decayed to 3.3e-6 by epoch 18. The warm restart fired epoch 19 (LR 3.3e-6 → 3.0e-4), val_acc dipped one epoch to 0.7725, then the second cycle climbed to **0.7919 @ epoch 30** and held flat through 35-36. Net gain from the restart: **+0.91 pt** over the first-cycle peak — essentially identical to kana's +0.9 pt. **Unlike kana, hangul converged**: epochs 35 and 36 are bit-identical on val_acc. A repeat run needs ~36 epochs, not more; a third restart is unlikely to help.
+
+**Failure modes (test-split):** the report is 500 rows of `syl_<hex codepoint>`; the low tail is a coherent pattern, not scattered noise.
+
+- **Complex-batchim (final-consonant-cluster) syllables are the floor** — every class with f1 < 0.45 has a double final consonant (ㄳ/ㄵ/ㄶ/ㄺ/ㄻ/ㄼ/ㄽ/ㄾ/ㅄ) or a visually dense final: `syl_ac29` 갩 (ㄵ) f1 **0.22** (precision 0.13 — a heavy over-prediction sink, the `low_i` analogue), `syl_ac25` 갥 (ㄺ) 0.34, `syl_ac21` 갡 (ㄼ) 0.43, `syl_ac42` 걂 (ㄻ) 0.40, `syl_bbff` 믿 0.36. The target-glyph crop shrinks the whole syllable to a fixed box, so the batchim cluster — the part that disambiguates these — is rendered at just a few pixels and the model falls back on the shared initial+medial (the low tail is dominated by ㄱ-initial syllables with ㅐ/ㅔ/ㅕ medials plus a two-letter cluster).
+- **Top confused pairs are all same-initial, same-or-adjacent-medial, differing only in the final consonant:** 겒→갡, 겐→걘, 걟→갥, 겑→갡 (all ×9-10), 걚→갡, 걒→갚, 갛→걓, 갂→갃 (×8). Two non-cluster pairs: 소→스 (ㅗ vs ㅡ medial, ×8) and 서→사 (ㅓ vs ㅏ, ×7) — short vertical-stroke vowels that differ by one tick.
+- **High-precision / low-recall classes** (e.g. `syl_ac91` P 1.00 R 0.39, `syl_ac5f` P 0.86 R 0.35): the model rarely emits these but is right when it does — they lose their instances to the over-prediction sinks above.
+
+No class at ~0% top-1 (min f1 0.22); no isolated-tile-style catastrophic collapse. The floor is the complex-batchim f1≈0.2-0.4 band. This is the direct hangul analogue of kana's small-kana collapse and Latin's `low_i`: a small, low-information sub-glyph feature that the fixed-box crop under-resolves.
 
 ### Remaining items after run 7
 
