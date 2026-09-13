@@ -352,7 +352,7 @@ def main():
     resume_into_p2 = False
     if args.resume:
         resume_epoch   = peek_checkpoint_epoch(args.resume)
-        resume_into_p2 = (resume_epoch >= freeze_epochs)
+        resume_into_p2 = (resume_epoch > freeze_epochs)
         print(f'[train] Checkpoint epoch={resume_epoch}  '
               f'resuming into {"phase 2" if resume_into_p2 else "phase 1"}')
 
