@@ -93,17 +93,24 @@ def render_context_tile(font: ImageFont.FreeTypeFont, cmap_set: set, target_ch: 
     bg_val = 30  if dark else 255
     fg_val = 255 if dark else 0
 
-    canvas = Image.new('L', (CANVAS_PAD * 2, CANVAS_PAD * 2), bg_val)
-    draw = ImageDraw.Draw(canvas)
-
+    # Measure on a scratch image, then size the canvas to the text. The canvas
+    # used to be a fixed CANVAS_PAD*2 square with the text starting at its
+    # centre, so only CANVAS_PAD px lay to the right of the origin. A string of
+    # 3+ full-width glyphs at 64pt ran past it, and the crop window beyond the
+    # edge came back as PIL's out-of-bounds fill (pure black): ~1/3 of kana/CJK
+    # tiles had the target glyph missing or mostly masked (found 2026-10-16,
+    # see Models/OCR/FINDINGS.md Run 10).
     try:
-        bbox = draw.textbbox((0, 0), text, font=font)
+        bbox = ImageDraw.Draw(Image.new('L', (1, 1))).textbbox((0, 0), text, font=font)
     except Exception:
         return None
     if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
         return None
 
+    text_w    = bbox[2] - bbox[0]
     text_h    = bbox[3] - bbox[1]
+    canvas = Image.new('L', (text_w + CANVAS_PAD * 2, text_h + CANVAS_PAD * 2), bg_val)
+    draw = ImageDraw.Draw(canvas)
     origin_x  = CANVAS_PAD - bbox[0]
     origin_y  = CANVAS_PAD - bbox[1]
     draw.text((origin_x, origin_y), text, font=font, fill=fg_val)
@@ -123,10 +130,11 @@ def render_context_tile(font: ImageFont.FreeTypeFont, cmap_set: set, target_ch: 
 
     win = target_w * rng.uniform(MIN_CROP_SCALE, MAX_CROP_SCALE)
     half = win / 2.0
-    crop = canvas.crop((
-        int(target_cx - half), int(target_cy - half),
-        int(target_cx + half), int(target_cy + half),
-    ))
+    box = (int(target_cx - half), int(target_cy - half),
+           int(target_cx + half), int(target_cy + half))
+    if box[0] < 0 or box[1] < 0 or box[2] > canvas.width or box[3] > canvas.height:
+        return None  # never let PIL pad an out-of-bounds crop with black
+    crop = canvas.crop(box)
     crop = crop.resize((tile_size, tile_size), Image.LANCZOS)
 
     tile_rgb = Image.new('RGB', (tile_size, tile_size), (bg_val, bg_val, bg_val))
@@ -190,6 +198,27 @@ def render_charset_context(font_meta: list, charset: list, update: bool, script:
 
     if skipped_fonts:
         print(f'  [{script}] {len(skipped_fonts)} font(s) failed to load (truetype error)')
+
+
+def _audit_black_tiles(script_dir: Path, n: int = 600, seed: int = 0):
+    """Sample rendered tiles and report how many are mostly pure black (0,0,0).
+    A healthy set has ~0: dark mode uses bg 30, light mode 255, so a large pure-black
+    area means the crop left the canvas. Warns above 1% (the bug this guards
+    against affected ~33% of kana/CJK tiles)."""
+    files = list(script_dir.glob('*/*.png'))
+    if not files:
+        return
+    sample = random.Random(seed).sample(files, min(n, len(files)))
+    bad = 0
+    for f in sample:
+        with Image.open(f) as im:
+            g = im.convert('L')
+            if g.histogram()[0] / (g.width * g.height) >= 0.6:
+                bad += 1
+    pct = 100.0 * bad / len(sample)
+    tag = 'WARNING' if pct > 1.0 else 'ok'
+    print(f'  [audit] {script_dir.name}: {bad}/{len(sample)} sampled tiles ({pct:.1f}%) '
+          f'are >=60% pure black [{tag}]')
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +308,7 @@ def main():
             for label, _ in charset if (script_dir / label).exists()
         )
         print(f'[render_chars_context] [{script}] done -- {total} images')
+        _audit_black_tiles(script_dir)
 
     print('\n[render_chars_context] All scripts complete.')
 

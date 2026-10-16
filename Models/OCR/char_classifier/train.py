@@ -47,13 +47,14 @@ _SIGNATURE_KEYS = (
     'backbone', 'scripts', 'epochs', 'freeze_epochs', 'scheduler', 'mixup_alpha',
     'unfreeze_blocks', 'batch_size', 'lr', 'augment', 'grid_mode', 'clip_grad',
     'select_metric', 'max_per_class', 'min_per_class', 'seed', 'weighted_sampler',
-    'dataset_name',
+    'dataset_name', 'dataset_signature',
 )
 
 # Top-level checkpoint-dir contents an archive sweeps up; 'runs/' (TensorBoard
 # logs) is handled separately since it's a directory, not a file.
 _ARCHIVE_FILES = ('last.pt', 'best.pt', 'progress.json', 'config.json',
-                  'class_names.json', 'curves.png', 'heartbeat.json')
+                  'class_names.json', 'curves.png', 'heartbeat.json',
+                  'test_report.json')
 
 
 def parse_args():
@@ -148,7 +149,24 @@ def _git_commit_hash() -> str:
     return 'unknown'
 
 
-def _build_signature(args, scripts: list) -> dict:
+def _dataset_signature(dataset_root, scripts: list):
+    """Per-script content signatures of the dataset this run trains on, read from
+    the .dataset-manifest.json that remote_train.py's zip_dataset() writes into
+    the archive (and sync_dataset() extracts alongside the data). Without this a
+    regenerated dataset under an unchanged dataset_name looks identical to the
+    signature check, so --resume would pick up a checkpoint trained on the old
+    data (the 2026-10 black-tile fix is the case that motivated it). None when
+    there is no manifest (local-generated data), which matches configs written
+    before this field existed."""
+    try:
+        sigs = json.loads((Path(dataset_root) / '.dataset-manifest.json').read_text())['scripts']
+        picked = {s: sigs[s] for s in sorted(scripts) if s in sigs}
+        return picked or None
+    except Exception:
+        return None
+
+
+def _build_signature(args, scripts: list, dataset_root=None) -> dict:
     return {
         'backbone': args.backbone, 'scripts': list(scripts), 'epochs': args.epochs,
         'freeze_epochs': args.freeze_epochs, 'scheduler': args.scheduler,
@@ -159,6 +177,7 @@ def _build_signature(args, scripts: list) -> dict:
         'min_per_class': args.min_per_class, 'seed': args.seed,
         'weighted_sampler': not args.no_weighted_sampler,
         'dataset_name': args.dataset_name,
+        'dataset_signature': _dataset_signature(dataset_root, scripts) if dataset_root else None,
         'git_commit': _git_commit_hash(),
     }
 
@@ -324,7 +343,7 @@ def main():
     # files, archiving them first if they don't match (see
     # _check_and_archive_stale_run docstring) -- must run before anything
     # below writes into ckpt_dir. May clear args.resume.
-    signature = _build_signature(args, scripts)
+    signature = _build_signature(args, scripts, dataset_root)
     _check_and_archive_stale_run(ckpt_dir, scripts, args, signature)
 
     # Write config so compare.py knows which backbone to load for this script
@@ -623,7 +642,8 @@ def main():
         print(f'[train] Evaluating best.pt (epoch {_best_epoch_ref[0]}) on test set ...')
     else:
         print('[train] No best.pt - evaluating the final-epoch model on test set ...')
-    print_report(model, test_loader, class_names, device)
+    print_report(model, test_loader, class_names, device,
+                 save_path=ckpt_dir / 'test_report.json')
     plot_curves(all_results, save_path=str(ckpt_dir / 'curves.png'))
 
 

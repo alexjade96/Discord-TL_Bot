@@ -209,7 +209,7 @@ Run 7 confirmed the uncapped `char-dataset-ctx` beats the downsampled `char-data
 
 ### Runs 8+: kana/hangul/cjk real-context migration (started 2026-09-01)
 
-The isolated-tile → real-context pivot that fixed Latin (runs 3-7) is being applied to kana/hangul/cjk. Status: **data generated and on Drive; kana trained (run 8) and hangul trained (run 9), both below; cjk (run 10) pending.**
+The isolated-tile → real-context pivot that fixed Latin (runs 3-7) is being applied to kana/hangul/cjk. Status (2026-10-16): **kana (run 8), hangul (run 9) and cjk (run 10) are all trained, but all three used data with a generator bug that masked the target glyph in about 1/3 of kana/cjk tiles (see "Run 10: cjk" below).  The data has been regenerated; the three scripts need retraining.**
 
 What was already in place: `render_chars_context.py` already dispatches `--scripts kana|hangul|cjk` (reusing `_build_kana`/`_build_hangul`/`_build_cjk` from `render_chars.py`); its render loop is script-agnostic. `train.py` / `remote_train.py` already accept those scripts and scope `checkpoints/<script>/` per script. The handoff's framing ("needs `render_chars_context.py` extended to those character sets") was stale.
 
@@ -223,6 +223,8 @@ Smoke test (kana, `--variants-per-slot 1`, system fonts + Noto): 362 font files 
 Recommended per-script training config (few-shot regime — rougher loss surface, noisy tiny val sets): `--scheduler cosine-warm`, `--freeze-epochs 3`, ~30-40 epochs, `grid_mode` left at the `none` default (real string context makes `TileGrid3x3` redundant and, per run 6, actively harmful on every script). The five platform notebooks carry a "Runs 8+" history paragraph and per-script guidance in Cell 1.
 
 #### Run 8 — kana (real-context, complete 2026-09-05)
+
+> **Correction (2026-10-16):** this run trained and scored on data where about 32% of kana tiles were at least 60% pure black (the target glyph masked by a generator canvas bug; see "Run 10: cjk" below).  The numbers and failure modes in this section, including the small-kana collapse, are confounded by it and should be re-measured on the regenerated data.
 
 First non-Latin real-context run. Config: `--scripts kana --epochs 36 --freeze-epochs 3 --unfreeze-blocks 4 --batch-size 64 --backbone dinov2_vits14 --grid-mode none --mixup-alpha 0.2 --scheduler cosine-warm --lr 3e-4 --dataset-name char-dataset`. Colab T4, ~485-540 s/epoch (~5 hrs wall). Data: refreshed `char-dataset.zip` (real-context, Noto-backed), **172 classes** (all kana including the 3 obsolete `hira_3094/3095/3096` legacy never rendered), ~39,164 images, 70/15/15 split → 429 train batches/epoch. Checkpoint dir `checkpoints/kana/`.
 
@@ -245,6 +247,8 @@ First non-Latin real-context run. Config: `--scripts kana --epochs 36 --freeze-e
 No isolated-tile-style catastrophic collapse (no class at ~0% top-1). The floor is the small-kana f1≈0.2-0.5 band, not a zero.
 
 #### Run 9 — hangul (real-context, complete 2026-09-09)
+
+> **Correction (2026-10-16):** this run's data had about 5% of tiles at least 60% pure black and 34% at least 20% black (same generator canvas bug; see "Run 10: cjk" below).  The headline numbers and the complex-batchim failure analysis are confounded and should be re-measured on the regenerated data.
 
 Config: `--scripts hangul --epochs 36 --freeze-epochs 3 --unfreeze-blocks 4 --batch-size 64 --backbone dinov2_vits14 --grid-mode none --mixup-alpha 0.2 --scheduler cosine-warm --lr 3e-4 --dataset-name char-dataset`. Kaggle T4, ~740-900 s/epoch (slower ~835-900 s in the second cosine cycle), ~8 h wall across two sessions. Data: real-context `char-dataset.zip` (Noto-backed), **500 classes** (top-500 hangul syllables), ~62,000 images, 70/15/15 split → ~680 train batches/epoch, 9,300 test images (~18.6/class). Checkpoint dir `checkpoints/hangul/`.
 
@@ -271,6 +275,64 @@ Test top-1 (0.8005) landed **above** val_acc (0.7919) — the 15% test split is 
 - **High-precision / low-recall classes** (e.g. `syl_ac91` P 1.00 R 0.39, `syl_ac5f` P 0.86 R 0.35): the model rarely emits these but is right when it does — they lose their instances to the over-prediction sinks above.
 
 No class at ~0% top-1 (min f1 0.22); no isolated-tile-style catastrophic collapse. The floor is the complex-batchim f1≈0.2-0.4 band. This is the direct hangul analogue of kana's small-kana collapse and Latin's `low_i`: a small, low-information sub-glyph feature that the fixed-box crop under-resolves.
+
+#### Run 10: cjk (real-context, complete 2026-10-16; result capped by a generator bug)
+
+Config: `--scripts cjk --epochs 36 --freeze-epochs 3 --unfreeze-blocks 4 --batch-size 64 --backbone dinov2_vits14 --grid-mode none --mixup-alpha 0.2 --scheduler cosine-warm --clip-grad 1.0 --lr 3e-4 --dataset-name char-dataset`.  Colab and Kaggle T4 across many sessions, 6,000 to 8,300 s/epoch (about 2 h).  Data: `char-dataset.zip` as of 2026-09-06, **3,000 classes**, 614,492 images, 70/15/15 split, 92,174 test images.  Checkpoint dir `checkpoints/cjk/`.
+
+The run hit one crash mid-way: resuming from a checkpoint saved exactly at `freeze_epochs` was treated as already being in phase 2 (`resume_epoch >= freeze_epochs` at `train.py:355`).  Fixed in `7d3a74b` (`>=` to `>`); the run continued from there with no further crashes.
+
+**Results (headline numbers, all capped by the data bug described below):**
+
+| Metric | Value |
+|---|---|
+| best val_acc | **0.710244 @ epoch 12** (nothing after it was higher, 24 epochs since best at the end) |
+| val_acc range, epochs 5 to 36 | 0.696 to 0.710 |
+| **test top-1 / top-3 / top-5** (`best.pt`) | **0.7110 / 0.7410 / 0.7560** |
+| test macro precision / recall / f1 | 0.89 / 0.71 / 0.77 (support 92,174) |
+
+Epochs 1 to 3 (frozen backbone) sat at val_acc 0.016 to 0.021; unfreezing at epoch 4 jumped it to 0.682, and it then crept to 0.710 by epoch 12.  The cosine-warm restart fired at epoch 19 (LR 3.3e-6 back to 3.0e-4) and **gave nothing**: the second cycle stayed at 0.698 to 0.707 and f1 drifted down from about 0.765 to 0.722.  This is unlike kana and hangul, where the restart added about +0.9 pt.  train_acc alternated by epoch parity (about 0.37 on even epochs, 0.45 on odd epochs in the first cycle); not investigated.
+
+**What the plateau actually was.**  The Cell 3 test report was print-only and had not been saved, so it was regenerated locally by running `best.pt` over the same deterministic test split (seed 42; top-1/3/5, macro P/R and support reproduced the Colab report exactly).  The failures were not tied to any font or mode:
+
+| Slice | Accuracy |
+|---|---|
+| light / dark mode | 0.7109 / 0.7112 |
+| variant v0 / v1 | 0.7124 / 0.7096 |
+| 57 fonts, 10th to 90th percentile | 0.690 to 0.731 |
+
+They were tied to how much of the tile was pure black (0,0,0):
+
+| Pure-black share of the tile | Share of test set | Accuracy |
+|---|---|---|
+| under 40% | 66.9% | **0.999** |
+| 60% or more | 33.1% | 0.13 |
+
+0.669 x 0.999 + 0.331 x 0.13 is the headline 0.711.  99.9% of all misses had at least 5% pure black.  On every tile where the glyph was visible the model was essentially perfect; on the rest it guessed a handful of "sink" classes (U+4EEB predicted 1,431 times for 43 true samples, U+508C 1,371 for 30, U+5840 1,131 for 45; 81 classes with precision under 0.3; the 20 most-predicted classes absorb 40% of all misses).  Raw dataset PNGs, with no augmentation, show a solid black block covering most of the tile, with only fragments of a neighbouring character beside it.
+
+**Root cause (generator, `render_chars_context.py`).**  The render canvas was a fixed 400 px square (`CANVAS_PAD * 2`) with the string drawn from its centre, so only 200 px lay to the right of the text origin.  At 64 pt a full-width kana/CJK glyph is about 64 px, so a target preceded by 3 neighbours (one draw in three) landed at x >= 392 and its crop window fell off the canvas; PIL fills an out-of-bounds crop with 0.  Reproduced by calling the real function on Noto Sans CJK SC: 32.5% of 600 tiles at least 60% black with the old canvas, 0.0% with a wider one.  This was present from the first real-context kana/hangul/cjk render (the dataset was generated on 2026-09-01) and went unnoticed because no per-slice accuracy or tile inspection was done.
+
+**Other scripts, 3,000-image samples of the pre-fix `char-dataset` (Latin 1,240; measured 2026-10-16):**
+
+| Script | Tiles >= 60% pure black | Tiles >= 20% |
+|---|---|---|
+| kana | 31.6% | 37.4% |
+| cjk | 34.6% | 42.5% |
+| hangul | 5.3% | 34.1% |
+| Latin (`char-dataset` and `char-dataset-ctx`) | 0.2% | 8.8% / 8.7% |
+
+Latin's narrower glyphs mostly keep the target on the canvas.  Its tiles at least 20% black fell from 8.8% to 6.7% after the fix; the remainder is real ink, since pure black is also the light-mode foreground colour.  (An earlier version of this note read the 46% of Latin tiles with at least 5% pure black as a black edge strip.  That was wrong: 43% of the regenerated, fixed Latin tiles are still above 5%, because heavy fonts in light mode legitimately exceed it.)  The effect on Latin accuracy is small and unmeasured.
+
+**Consequences for earlier runs.**  Run 8 (kana, best val 0.7115) and run 9 (hangul, 0.7919) trained and scored on the same flawed data, so their headline numbers and their failure modes are confounded.  In particular the "small kana collapse" and the "complex-batchim floor", each with a sink class of precision around 0.1, look like the same sink-class behaviour seen here, and may be partly or wholly artifacts.  This is inference; it is not confirmed until those scripts are retrained on clean data.  The same applies to Latin runs 3 to 7 to a lesser, unmeasured degree.
+
+**Fix and regeneration (2026-10-16).**
+- `render_chars_context.py`: the canvas is now sized to the measured text (`text_w + 2*CANVAS_PAD` wide), and `render_context_tile` returns `None` rather than let PIL pad an out-of-bounds crop.  A post-render `_audit_black_tiles()` samples 600 tiles per script and prints a warning if more than 1% are at least 60% black.
+- Smoke test on four cjk classes: 832 tiles, 0 mostly-black, same file count as the old dataset.
+- Full regeneration result (all scripts, sampled 930 to 3,000 tiles each): **0.00% of tiles at least 60% black in every script**, audit clean on all four.  Class sets are identical to before and no class is empty.  Image counts: kana 39,164 (same), hangul 62,000 (same), cjk 614,492 (same), latin 87,032 (was 77,465; the extra Latin tiles come from the `.ttc`/`.otc` font faces added to `copy_system_fonts()` after the August Latin render).  Tiles at least 20% black: kana 37.4% to 0.0%, hangul 34.1% to 0.8%, cjk 42.5% to 0.2%, Latin 8.8% to 6.7% (real ink).
+- Regeneration parameters were recovered from the old files (not recorded anywhere): `--variants-per-slot 2 --tile-size 64`, Noto Sans CJK via `--extra-fonts-dir ../../Datasets/google-fonts` for kana/hangul/cjk only, Latin without it.  Output went to a new directory (`char-dataset-fixed`), leaving the old dataset untouched until verified.
+- The per-tile RNG seed includes the font file path string, so a re-render from a different location draws different neighbours and crops.  The regenerated set is a fresh random draw with a new train/val/test split, so its numbers are not directly comparable with runs 8 to 10.
+
+**Restart safeguards.**  `train.py`'s run signature compared only hyperparameters and `dataset_name`, so regenerated data under the same name looked identical and a `--resume` would have loaded the old epoch-36 checkpoint.  The signature now includes the per-script content signatures from the dataset's `.dataset-manifest.json`; resuming against different data archives the old run (moved, not deleted) and starts fresh.  `print_report` now also writes `test_report.json` next to `progress.json`, and the five notebooks print it in their final results cell, so test results no longer exist only in cell output.
 
 ### Remaining items after run 7
 

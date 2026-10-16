@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from typing import Dict, List
 
 import matplotlib.pyplot as plt
@@ -43,7 +45,8 @@ def plot_curves(results: Dict[str, List], save_path: str = None):
     plt.show()
 
 
-def print_report(model, loader, class_names: list, device, top_confused: int = 10):
+def print_report(model, loader, class_names: list, device, top_confused: int = 10,
+                 save_path=None):
     model.eval()
     all_logits, all_preds, all_labels = [], [], []
     with torch.inference_mode():
@@ -82,3 +85,21 @@ def print_report(model, loader, class_names: list, device, top_confused: int = 1
     print(f'--- Top {top_confused} Confused Pairs (true -> predicted) ---')
     for count, true_cls, pred_cls in pairs[:top_confused]:
         print(f'  {true_cls:40s} -> {pred_cls:40s}  ({count})')
+
+    if save_path:
+        report = classification_report(
+            all_labels, all_preds,
+            labels=present, target_names=present_names, zero_division=0,
+            output_dict=True,
+        )
+        Path(save_path).write_text(json.dumps({
+            'top1': top1, 'top3': top3, 'top5': top5,
+            'n_test': len(all_labels),
+            'n_classes': n_classes,
+            'report': report,
+            'top_confused': [
+                {'true': t, 'pred': p, 'count': int(c)}
+                for c, t, p in pairs[:max(top_confused, 50)]
+            ],
+        }, indent=2))
+        print(f'[stats] Test report saved to {save_path}')
