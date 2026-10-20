@@ -192,6 +192,33 @@ def _script_tag(scripts) -> str:
     return '_'.join(sorted(scripts))
 
 
+def _estimate_remaining(history, completed: int, total: int, freeze: int):
+    """Seconds left, estimated per phase from this run's own timed epochs.
+
+    Phase 1 (frozen backbone) and phase 2 (fine-tune) epochs differ in cost, so
+    each phase's remaining epochs use that phase's median epoch time. Returns
+    (secs, note); (None, '') when no epoch has been timed. note flags phase 2
+    still being priced at the phase-1 rate, which is likely an underestimate.
+    """
+    from statistics import median
+    p1 = [h['epoch_secs'] for h in history if h.get('epoch', 0) <= freeze and 'epoch_secs' in h]
+    p2 = [h['epoch_secs'] for h in history if h.get('epoch', 0) > freeze and 'epoch_secs' in h]
+    if not p1 and not p2:
+        return None, ''
+    m1, m2 = (median(p1) if p1 else median(p2)), (median(p2) if p2 else median(p1))
+    left1 = max(freeze - completed, 0)
+    left2 = max(total - max(completed, freeze), 0)
+    note = 'phase 2 not yet timed, likely longer' if (left2 and not p2) else ''
+    return m1 * left1 + m2 * left2, note
+
+
+def _fmt_eta(secs: float):
+    from datetime import datetime, timedelta
+    fin = datetime.now().astimezone() + timedelta(seconds=secs)
+    h, m = divmod(int(secs) // 60, 60)
+    return fin, f'{fin.strftime("%Y-%m-%d %H:%M %Z")} ({h}h {m:02d}m left)'
+
+
 def _check_and_archive_stale_run(ckpt_dir: Path, scripts, args, signature: dict):
     """Archive ckpt_dir's existing files before this run can overwrite them,
     if they belong to a different training plan. Two triggers:
@@ -349,11 +376,20 @@ def main():
     _run_tag = f'{_bar_tag} {args.backbone} bs{args.batch_size} lr{args.lr:g} {args.scheduler}'
     # Authoritative run state, printed after any archive so it can't show a prior run.
     _pp = ckpt_dir / 'progress.json'
+    _prog0 = {}
     try:
-        _done = json.loads(_pp.read_text()).get('completed', 0) if (args.resume and _pp.exists()) else 0
+        if args.resume and _pp.exists():
+            _prog0 = json.loads(_pp.read_text())
     except Exception:
-        _done = 0
-    print(f'[progress] [{_run_tag} {args.epochs}ep freeze{args.freeze_epochs}] ' + (f'Resuming: epoch {_done}/{args.epochs} complete' if _done else f'Fresh run: epoch 0/{args.epochs}'))
+        pass
+    _done = _prog0.get('completed', 0)
+    _head = f'[progress] [{_run_tag} {args.epochs}ep freeze{args.freeze_epochs}] '
+    if _done:
+        _secs, _note = _estimate_remaining(_prog0.get('history', []), _done, args.epochs, args.freeze_epochs)
+        _eta = f', est. finish {_fmt_eta(_secs)[1]}' + (f' [{_note}]' if _note else '') if _secs is not None else ''
+        print(f'{_head}Resuming: epoch {_done}/{args.epochs} complete{_eta}')
+    else:
+        print(f'{_head}Fresh run: epoch 0/{args.epochs}, no estimate until epoch 1 finishes')
 
     # Write config so compare.py knows which backbone to load for this script
     # set; also doubles as the recorded signature for the next invocation.
@@ -531,6 +567,8 @@ def main():
                    for k, v in metrics.items()
                    if k not in ('lr', 'grad_norm')},
             })
+        _eta_secs, _ = _estimate_remaining(_epoch_log, g, args.epochs, args.freeze_epochs)
+        _eta_finish = _fmt_eta(_eta_secs)[0].isoformat(timespec='seconds') if _eta_secs is not None else None
         _progress_path.write_text(json.dumps({
             'scripts':           list(scripts),
             'backbone':          args.backbone,
@@ -551,7 +589,8 @@ def main():
             'last_lr':           _lr,
             'last_grad_norm':    _gnorm,
             'last_epoch_secs':   _epoch_secs,
-            'eta_secs':          round(_epoch_secs * _epochs_remaining),
+            'eta_secs':          round(_eta_secs if _eta_secs is not None else _epoch_secs * _epochs_remaining),
+            'eta_finish':        _eta_finish,
             'saved_at':          datetime.now().isoformat(timespec='seconds'),
             'history':           _epoch_log,
         }, indent=2))
