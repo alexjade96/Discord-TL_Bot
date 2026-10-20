@@ -212,6 +212,27 @@ def _estimate_remaining(history, completed: int, total: int, freeze: int):
     return m1 * left1 + m2 * left2, note
 
 
+def _run_left_str(history, g: int, frac: float, total: int, freeze: int) -> str:
+    """Whole-run time left for a tqdm postfix, given epoch g is `frac` done.
+
+    Priced per phase from this run's own timed epochs (see _estimate_remaining);
+    '' until one epoch has been timed. frac is a rough train/eval split of the
+    epoch, so the figure is approximate. A trailing '+' means phase 2 is still
+    priced at the phase-1 rate.
+    """
+    from statistics import median
+    p1 = [h['epoch_secs'] for h in history if h.get('epoch', 0) <= freeze and 'epoch_secs' in h]
+    p2 = [h['epoch_secs'] for h in history if h.get('epoch', 0) > freeze and 'epoch_secs' in h]
+    if not p1 and not p2:
+        return ''
+    m1, m2 = (median(p1) if p1 else median(p2)), (median(p2) if p2 else median(p1))
+    cur = m1 if g <= freeze else m2
+    secs = cur * (1 - frac) + sum(m1 if h <= freeze else m2 for h in range(g + 1, total + 1))
+    mins = int(secs) // 60
+    h, m = divmod(mins, 60)
+    return f'left ~{h}h{m:02d}m' + ('+' if (not p2 and g < total and total > freeze) else '')
+
+
 def _fmt_eta(secs: float):
     from datetime import datetime, timedelta
     fin = datetime.now().astimezone() + timedelta(seconds=secs)
@@ -503,6 +524,7 @@ def main():
                     all_results[k].append(_e[k])
 
     _heartbeat_path = (ckpt_dir / 'heartbeat.json') if args.heartbeat_interval > 0 else None
+    _eta_fn = lambda g, frac: _run_left_str(_epoch_log, g, frac, args.epochs, args.freeze_epochs)
 
     _t_ref = [time.monotonic()]
 
@@ -610,7 +632,7 @@ def main():
                     mixup_alpha=args.mixup_alpha, clip_grad=args.clip_grad,
                     on_epoch_end=on_epoch_end,
                     heartbeat_path=_heartbeat_path, heartbeat_interval=args.heartbeat_interval,
-                    total_epochs=args.epochs, run_tag=_run_tag, bar_tag=_bar_tag,
+                    total_epochs=args.epochs, run_tag=_run_tag, bar_tag=_bar_tag, eta_fn=_eta_fn,
                 )
                 for k in all_results:
                     all_results[k].extend(results[k])
@@ -654,7 +676,7 @@ def main():
                     mixup_alpha=args.mixup_alpha, clip_grad=args.clip_grad,
                     scheduler=scheduler, on_epoch_end=on_epoch_end,
                     heartbeat_path=_heartbeat_path, heartbeat_interval=args.heartbeat_interval,
-                    total_epochs=args.epochs, run_tag=_run_tag, bar_tag=_bar_tag,
+                    total_epochs=args.epochs, run_tag=_run_tag, bar_tag=_bar_tag, eta_fn=_eta_fn,
                 )
                 for k in all_results:
                     all_results[k].extend(results[k])
