@@ -45,13 +45,13 @@ def _mixup_batch(x: torch.Tensor, y: torch.Tensor, alpha: float):
 def train_step(model, loader, loss_fn, optimizer, device,
                mixup_alpha: float = 0.0, clip_grad: float = 1.0,
                heartbeat_path=None, heartbeat_interval: float = 60.0,
-               heartbeat_meta: dict = None):
+               heartbeat_meta: dict = None, desc: str = '  train'):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
     total_gnorm = 0.0
     n_batches   = len(loader)
     _t0, _t_last_hb = time.monotonic(), 0.0
-    for i, (X, y) in enumerate(tqdm(loader, leave=False, desc='  train'), start=1):
+    for i, (X, y) in enumerate(tqdm(loader, leave=False, desc=desc), start=1):
         X, y = X.to(device), y.to(device)
         optimizer.zero_grad()
 
@@ -92,7 +92,7 @@ def train_step(model, loader, loss_fn, optimizer, device,
 
 def eval_step(model, loader, loss_fn, device,
              heartbeat_path=None, heartbeat_interval: float = 60.0,
-             heartbeat_meta: dict = None):
+             heartbeat_meta: dict = None, desc: str = '  eval'):
     from sklearn.metrics import f1_score, precision_score, recall_score
     model.eval()
     total_loss, correct, top3, top5, total = 0.0, 0, 0, 0, 0
@@ -100,7 +100,7 @@ def eval_step(model, loader, loss_fn, device,
     n_batches = len(loader)
     _t0, _t_last_hb = time.monotonic(), 0.0
     with torch.inference_mode():
-        for i, (X, y) in enumerate(tqdm(loader, leave=False, desc='  eval'), start=1):
+        for i, (X, y) in enumerate(tqdm(loader, leave=False, desc=desc), start=1):
             X, y   = X.to(device), y.to(device)
             logits = model(X)
             loss   = loss_fn(logits, y)
@@ -138,6 +138,7 @@ def train_loop(
     mixup_alpha: float = 0.0, clip_grad: float = 1.0,
     scheduler=None, on_epoch_end=None,
     heartbeat_path=None, heartbeat_interval: float = 60.0,
+    total_epochs: int = None, run_tag: str = '', bar_tag: str = '',
 ) -> Dict[str, List]:
     results = {
         'train_loss': [], 'train_acc': [],
@@ -148,13 +149,19 @@ def train_loop(
     }
     for epoch in range(1, epochs + 1):
         g = epoch + epoch_offset
+        # Epoch label rides on the tqdm desc so every bar refresh carries it, not
+        # just the first line of the loop.
+        _ep  = f'Epoch {g}/{total_epochs}' if total_epochs else f'Epoch {g}'
+        _bar = f'{bar_tag} E{g}/{total_epochs}' if total_epochs else f'{bar_tag} E{g}'
         t_loss, t_acc, t_gnorm                         = train_step(model, train_loader, loss_fn, optimizer, device,
                                                                      mixup_alpha=mixup_alpha, clip_grad=clip_grad,
                                                                      heartbeat_path=heartbeat_path, heartbeat_interval=heartbeat_interval,
-                                                                     heartbeat_meta={'epoch': g})
+                                                                     heartbeat_meta={'epoch': g},
+                                                                     desc=f'  {_bar.strip()} train')
         v_loss, v_acc, v_top3, v_top5, v_prec, v_rec, v_f1 = eval_step(model, val_loader, loss_fn, device,
                                                                      heartbeat_path=heartbeat_path, heartbeat_interval=heartbeat_interval,
-                                                                     heartbeat_meta={'epoch': g})
+                                                                     heartbeat_meta={'epoch': g},
+                                                                     desc=f'  {_bar.strip()} eval ')
         _lr = optimizer.param_groups[-1]['lr']
 
         results['train_loss'].append(t_loss)
@@ -170,7 +177,7 @@ def train_loop(
         results['lr'].append(_lr)
 
         print(
-            f'Epoch {g:3d} | '
+            f'[{run_tag}] {_ep} | ' if run_tag else f'{_ep} | '
             f'train loss {t_loss:.4f}  acc {t_acc:.4f}  gnorm {t_gnorm:.3f} | '
             f'val loss {v_loss:.4f}  acc {v_acc:.4f}  prec {v_prec:.4f}  rec {v_rec:.4f}  f1 {v_f1:.4f} | '
             f'lr {_lr:.2e}'

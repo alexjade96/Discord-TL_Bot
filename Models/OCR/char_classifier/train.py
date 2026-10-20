@@ -345,6 +345,15 @@ def main():
     # below writes into ckpt_dir. May clear args.resume.
     signature = _build_signature(args, scripts, dataset_root)
     _check_and_archive_stale_run(ckpt_dir, scripts, args, signature)
+    _bar_tag = '+'.join(scripts)
+    _run_tag = f'{_bar_tag} {args.backbone} bs{args.batch_size} lr{args.lr:g} {args.scheduler}'
+    # Authoritative run state, printed after any archive so it can't show a prior run.
+    _pp = ckpt_dir / 'progress.json'
+    try:
+        _done = json.loads(_pp.read_text()).get('completed', 0) if (args.resume and _pp.exists()) else 0
+    except Exception:
+        _done = 0
+    print(f'[progress] [{_run_tag} {args.epochs}ep freeze{args.freeze_epochs}] ' + (f'Resuming: epoch {_done}/{args.epochs} complete' if _done else f'Fresh run: epoch 0/{args.epochs}'))
 
     # Write config so compare.py knows which backbone to load for this script
     # set; also doubles as the recorded signature for the next invocation.
@@ -507,7 +516,7 @@ def main():
             _meta['best_epoch']   = g
             save_checkpoint(model, current_optimizer[0], g, v_acc,
                             ckpt_dir / 'best.pt', class_names, meta=_meta)
-            print(f'[train] New best ({_sel}): {_score:.4f}  '
+            print(f'[train] [{_bar_tag}] Epoch {g}/{args.epochs} new best ({_sel}): {_score:.4f}  '
                   f'[acc {v_acc:.4f}  f1 {_f1:.4f}] -> saved best.pt')
         if metrics:
             _epoch_log.append({
@@ -562,6 +571,7 @@ def main():
                     mixup_alpha=args.mixup_alpha, clip_grad=args.clip_grad,
                     on_epoch_end=on_epoch_end,
                     heartbeat_path=_heartbeat_path, heartbeat_interval=args.heartbeat_interval,
+                    total_epochs=args.epochs, run_tag=_run_tag, bar_tag=_bar_tag,
                 )
                 for k in all_results:
                     all_results[k].extend(results[k])
@@ -605,6 +615,7 @@ def main():
                     mixup_alpha=args.mixup_alpha, clip_grad=args.clip_grad,
                     scheduler=scheduler, on_epoch_end=on_epoch_end,
                     heartbeat_path=_heartbeat_path, heartbeat_interval=args.heartbeat_interval,
+                    total_epochs=args.epochs, run_tag=_run_tag, bar_tag=_bar_tag,
                 )
                 for k in all_results:
                     all_results[k].extend(results[k])
