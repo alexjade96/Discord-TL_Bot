@@ -209,7 +209,7 @@ Run 7 confirmed the uncapped `char-dataset-ctx` beats the downsampled `char-data
 
 ### Runs 8+: kana/hangul/cjk real-context migration (started 2026-09-01)
 
-The isolated-tile → real-context pivot that fixed Latin (runs 3-7) is being applied to kana/hangul/cjk. Status (2026-10-16): **kana (run 8), hangul (run 9) and cjk (run 10) are all trained, but all three used data with a generator bug that masked the target glyph in about 1/3 of kana/cjk tiles (see "Run 10: cjk" below).  The data has been regenerated; the three scripts need retraining.**
+The isolated-tile → real-context pivot that fixed Latin (runs 3-7) is being applied to kana/hangul/cjk. Status (2026-10-16): **kana (run 8), hangul (run 9) and cjk (run 10) are all trained, but all three used data with a generator bug that masked the target glyph in about 1/3 of kana/cjk tiles (see "Run 10: cjk" below).  The data has been regenerated; kana has been retrained (run 11, test top-1 0.977); hangul and cjk still need retraining.**
 
 What was already in place: `render_chars_context.py` already dispatches `--scripts kana|hangul|cjk` (reusing `_build_kana`/`_build_hangul`/`_build_cjk` from `render_chars.py`); its render loop is script-agnostic. `train.py` / `remote_train.py` already accept those scripts and scope `checkpoints/<script>/` per script. The handoff's framing ("needs `render_chars_context.py` extended to those character sets") was stale.
 
@@ -224,7 +224,7 @@ Recommended per-script training config (few-shot regime — rougher loss surface
 
 #### Run 8 — kana (real-context, complete 2026-09-05)
 
-> **Correction (2026-10-16):** this run trained and scored on data where about 32% of kana tiles were at least 60% pure black (the target glyph masked by a generator canvas bug; see "Run 10: cjk" below).  The numbers and failure modes in this section, including the small-kana collapse, are confounded by it and should be re-measured on the regenerated data.
+> **Correction (2026-10-16):** this run trained and scored on data where about 32% of kana tiles were at least 60% pure black (the target glyph masked by a generator canvas bug; see "Run 10: cjk" below).  The numbers and failure modes in this section, including the small-kana collapse, are confounded by it and should be re-measured on the regenerated data.  **Re-measured in "Run 11: kana" below: test top-1 0.977 on clean data, and the small-kana collapse did not reappear.**
 
 First non-Latin real-context run. Config: `--scripts kana --epochs 36 --freeze-epochs 3 --unfreeze-blocks 4 --batch-size 64 --backbone dinov2_vits14 --grid-mode none --mixup-alpha 0.2 --scheduler cosine-warm --lr 3e-4 --dataset-name char-dataset`. Colab T4, ~485-540 s/epoch (~5 hrs wall). Data: refreshed `char-dataset.zip` (real-context, Noto-backed), **172 classes** (all kana including the 3 obsolete `hira_3094/3095/3096` legacy never rendered), ~39,164 images, 70/15/15 split → 429 train batches/epoch. Checkpoint dir `checkpoints/kana/`.
 
@@ -333,6 +333,22 @@ Latin's narrower glyphs mostly keep the target on the canvas.  Its tiles at leas
 - The per-tile RNG seed includes the font file path string, so a re-render from a different location draws different neighbours and crops.  The regenerated set is a fresh random draw with a new train/val/test split, so its numbers are not directly comparable with runs 8 to 10.
 
 **Restart safeguards.**  `train.py`'s run signature compared only hyperparameters and `dataset_name`, so regenerated data under the same name looked identical and a `--resume` would have loaded the old epoch-36 checkpoint.  The signature now includes the per-script content signatures from the dataset's `.dataset-manifest.json`; resuming against different data archives the old run (moved, not deleted) and starts fresh.  `print_report` now also writes `test_report.json` next to `progress.json`, and the five notebooks print it in their final results cell, so test results no longer exist only in cell output.
+
+#### Run 11: kana (clean data, complete 2026-10-22)
+
+Retrain of run 8 on the regenerated, black-tile-free `char-dataset`.  Config: `--scripts kana --epochs 36 --freeze-epochs 3 --unfreeze-blocks 4 --batch-size 64 --backbone dinov2_vits14 --grid-mode none --mixup-alpha 0.2 --scheduler cosine-warm --lr 3e-4 --dataset-name char-dataset`, identical to run 8.  Colab, about 440 s/epoch warm-up and 505 to 550 s/epoch fine-tune.  Started 2026-10-20; `progress.json` was last saved 2026-10-22 15:28 UTC.  `train.py` archived run 8 on start (`checkpoints/archive/kana/20261020_run1_epoch36/`, reason `resume_signature_mismatch`, only `dataset_signature` differing), which confirmed the new safeguard on a real session.  172 classes, 5,875 test images, new split (not split-comparable with run 8).
+
+**Results:**
+
+| Metric | Run 8 (black-tile bug) | Run 11 (clean) |
+|---|---|---|
+| best val_acc | 0.7115 @ 36 | **0.977872 @ epoch 32** |
+| **test top-1 / top-3 / top-5** (`best.pt`) | 0.7180 / 0.7799 / 0.8054 | **0.9772 / 1.0000 / 1.0000** |
+| test macro F1 | 0.74 | 0.977 |
+
+The final epoch scored 0.9716 and `best.pt` is epoch 32, so epochs 29 to 36 sit in a 0.970 to 0.978 band.  First cosine cycle peaked at 0.9723 @ 16; the warm restart at epoch 19 dipped to 0.9607 and the second cycle added about +0.56 pt.  Val loss fell 1.20 to 0.91 and train accuracy stays about 0.45 to 0.50 (mixup plus heavy augmentation), so no overfitting.  Warm-up epochs 1 to 3 gave 0.148 / 0.186 / 0.229 and the first unfrozen epoch jumped to 0.9035.  The curve is flat, so more than 36 epochs is not expected to help kana.
+
+**Failure modes (test split):** only 12 of 172 classes have f1 below 0.9 and the worst is 0.81 (`kata_30e7` ョ-family 0.81, `kata_30d9` 0.83, `hira_3078` 0.84, `kata_30d8` 0.85).  The run 8 small-kana collapse (f1 0.18 to 0.5 with a sink class at precision 0.10) is gone, which supports the reading that it was an artifact of the black tiles.  What remains are near-identical pairs: ヨ/ョ (`30e7`/`30e8`, 10), ベ/べ (9), へ/ヘ (7 and 4), あ/ぁ (6), ゆ/ュ-type small/full pairs, and the obsolete `hira_3095/3096` against か/け (5 each).  Hiragana/katakana look-alikes and small/full pairs differ little in shape, so this is plausibly a ceiling of the glyphs, not of training.  This is inferred from the confusion list, not tested.
 
 ### Remaining items after run 7
 
