@@ -350,6 +350,22 @@ The final epoch scored 0.9716 and `best.pt` is epoch 32, so epochs 29 to 36 sit 
 
 **Failure modes (test split):** only 12 of 172 classes have f1 below 0.9 and the worst is 0.81 (`kata_30e7` ョ-family 0.81, `kata_30d9` 0.83, `hira_3078` 0.84, `kata_30d8` 0.85).  The run 8 small-kana collapse (f1 0.18 to 0.5 with a sink class at precision 0.10) is gone, which supports the reading that it was an artifact of the black tiles.  What remains are near-identical pairs: ヨ/ョ (`30e7`/`30e8`, 10), ベ/べ (9), へ/ヘ (7 and 4), あ/ぁ (6), ゆ/ュ-type small/full pairs, and the obsolete `hira_3095/3096` against か/け (5 each).  Hiragana/katakana look-alikes and small/full pairs differ little in shape, so this is plausibly a ceiling of the glyphs, not of training.  This is inferred from the confusion list, not tested.
 
+#### Run 12: hangul (clean data, complete 2026-10-24)
+
+Retrain of run 9 on the regenerated, black-tile-free `char-dataset`.  Config: `--scripts hangul --epochs 36 --freeze-epochs 3 --unfreeze-blocks 4 --batch-size 64 --backbone dinov2_vits14 --grid-mode none --mixup-alpha 0.2 --scheduler cosine-warm --lr 3e-4 --dataset-name char-dataset`, identical to run 9.  Colab, about 690 s/epoch warm-up and 790 to 825 s/epoch fine-tune (epochs 16 and 17 took 1,173 s and 948 s, cause unknown).  Started 2026-10-22; `progress.json` last saved 2026-10-24 19:38 UTC, about two days after the ETA printed on 2026-10-22 (reason not recorded).  `train.py` archived run 9 on start (`checkpoints/archive/hangul/20261022_run1_epoch36`).  500 classes, 9,300 test images, new split (not split-comparable with run 9).
+
+| Metric | Run 9 (black-tile bug) | Run 12 (clean) |
+|---|---|---|
+| best val_acc | 0.7919 | **1.0000** (first at epoch 12) |
+| **test top-1 / top-3 / top-5** (`best.pt`) | 0.8005 / 0.8896 / 0.9218 | **0.9998 / 1.0000 / 1.0000** |
+| test macro F1 | n/a | 0.9998 |
+
+Warm-up epochs 1 to 3 gave 0.019 / 0.037 / 0.040; the first unfrozen epoch gave 0.964 and epoch 5 gave 0.998.  After epoch 12 val_acc stayed at 1.0 apart from small dips (worst 0.9991 at the epoch 19 cosine restart).  Val loss fell 1.00 to 0.97 (mixup-inflated) and train accuracy stayed about 0.45 to 0.52.  `progress.json` reports `best_epoch` 17; the score is saturated, so later epochs could not replace it.  The epoch inside `best.pt` itself was not checked.
+
+**Failure modes (test split):** 2 errors in 9,300, both look-alike syllable pairs (`syl_bc98` as `syl_bcb4`, `syl_ad50` as `syl_ace0`).  Lowest class f1 is 0.968.  The run 9 complex-batchim floor (f1 0.2 to 0.4) and its sink classes are gone, which supports reading them as black-tile artifacts.
+
+**Caveat.**  The split is random per tile from a single draw, with about 124 tiles per class that differ by font, mode and neighbours.  Near-duplicate tiles could sit on both sides of the split, and the test split shares any such leak with val.  This run confirms the black-tile fix; it does not show generalisation to unseen fonts.  A font-held-out split would test that and has not been run.
+
 ### Remaining items after run 7
 
 - **Generate + train kana/hangul/cjk real-context data.** Not yet done. `render_chars_context.py --scripts kana hangul cjk --extra-fonts-dir ../../Datasets/google-fonts` into `char-dataset/`, check per-class counts, zip the all-scripts `char-dataset/`, replace `char-dataset.zip` on Drive, then run the three trainings on Colab (`--scheduler cosine-warm`, ~30-40 epochs). Record results here.
