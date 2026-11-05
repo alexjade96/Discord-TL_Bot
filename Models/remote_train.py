@@ -506,13 +506,29 @@ def _rclone_sync(src: str, dst: str):
         print("[sync] OK")
 
 
-def _sync_loop(proc, src: str, dst: str, interval: int = 600):
-    """Sync checkpoints every `interval` seconds while training subprocess runs."""
+def _sync_loop(proc, src: str, dst: str, watch: Path = None, fallback: int = 1800):
+    """Sync checkpoints after each finished epoch while the training subprocess runs.
+
+    train.py's epoch-end callback writes last.pt, then best.pt on improvement, then
+    progress.json, so a changed progress.json mtime means the epoch (eval included)
+    is fully on disk. `fallback` seconds without one still triggers a sync so
+    heartbeat.json reaches Drive during a long epoch.
+    """
     import time
-    print(f"[sync] Auto-sync every {interval}s: {src} → {dst}")
-    last = 0.0
+
+    def _mtime():
+        try:
+            return watch.stat().st_mtime if watch else None
+        except OSError:
+            return None
+
+    print(f"[sync] Auto-sync after each epoch (fallback {fallback}s): {src} → {dst}")
+    seen = _mtime()
+    last = time.time()
     while proc.poll() is None:
-        if time.time() - last >= interval:
+        now = _mtime()
+        if now != seen or time.time() - last >= fallback:
+            seen = now
             _rclone_sync(src, dst)
             last = time.time()
         time.sleep(10)
@@ -565,7 +581,7 @@ def train(resume: bool, smoke_test: bool, sync_to: str = None):
     if sync_to:
         sync_src = str(Path(DRIVE_ROOT) / "checkpoints")
         proc = subprocess.Popen(cmd, cwd=str(ocr_dir))
-        _sync_loop(proc, sync_src, sync_to)
+        _sync_loop(proc, sync_src, sync_to, watch=Path(CKPT_DIR) / "progress.json")
         sys.exit(proc.returncode)
     else:
         result = subprocess.run(cmd, cwd=str(ocr_dir))
@@ -652,7 +668,7 @@ def parse_args():
     p.add_argument("--sync-to",       default=None,
                    help="rclone destination for automatic checkpoint sync during training "
                         "(e.g. 'gdrive:Colab Notebooks/TL-Bot/checkpoints/'). "
-                        "Syncs every 10 minutes and once on finish. Kaggle use only.")
+                        "Syncs after each finished epoch (30 min fallback) and once on finish. Kaggle use only.")
     return p.parse_args()
 
 
