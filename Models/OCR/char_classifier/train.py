@@ -367,6 +367,26 @@ def _make_p2_optimizer(model, lr):
     ])
 
 
+def _create_model_with_fallback(backbone: str, num_classes: int, resuming: bool):
+    """Build the model with pretrained weights; on a resume, tolerate their absence.
+
+    The pretrained download is tried first.  If it fails (host down, expired TLS
+    certificate, no such weights for this backbone) and a checkpoint is being
+    resumed, the backbone is built without pretrained weights, since the
+    checkpoint's full state_dict is loaded straight after.  A fresh run has no
+    such source, so the error propagates.
+    """
+    try:
+        return create_model(backbone, num_classes=num_classes, freeze_base=True)
+    except Exception as e:
+        if not resuming:
+            raise
+        print(f'[model] Pretrained weights unavailable ({type(e).__name__}: {e}); '
+              f'resuming, so using the checkpoint weights instead.')
+        return create_model(backbone, num_classes=num_classes, freeze_base=True,
+                            pretrained=False)
+
+
 def main():
     args = parse_args()
     set_seed(args.seed)
@@ -442,11 +462,8 @@ def main():
               f'resuming into {"phase 2" if resume_into_p2 else "phase 1"}')
 
     # --- Build model; unfreeze backbone now if resuming into phase 2 ---
-    # On resume the full state_dict (backbone included) is loaded below, so the
-    # pretrained download is skipped; it would otherwise fail if the weights
-    # host is down.
-    model = create_model(args.backbone, num_classes=len(class_names), freeze_base=True,
-                         pretrained=not args.resume).to(device)
+    model = _create_model_with_fallback(args.backbone, len(class_names),
+                                        resuming=bool(args.resume)).to(device)
     if resume_into_p2:
         unfreeze_backbone(model, args.backbone, n_blocks=args.unfreeze_blocks)
     print_param_summary(model)
