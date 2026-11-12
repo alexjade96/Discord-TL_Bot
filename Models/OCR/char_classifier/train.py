@@ -442,7 +442,11 @@ def main():
               f'resuming into {"phase 2" if resume_into_p2 else "phase 1"}')
 
     # --- Build model; unfreeze backbone now if resuming into phase 2 ---
-    model = create_model(args.backbone, num_classes=len(class_names), freeze_base=True).to(device)
+    # On resume the full state_dict (backbone included) is loaded below, so the
+    # pretrained download is skipped; it would otherwise fail if the weights
+    # host is down.
+    model = create_model(args.backbone, num_classes=len(class_names), freeze_base=True,
+                         pretrained=not args.resume).to(device)
     if resume_into_p2:
         unfreeze_backbone(model, args.backbone, n_blocks=args.unfreeze_blocks)
     print_param_summary(model)

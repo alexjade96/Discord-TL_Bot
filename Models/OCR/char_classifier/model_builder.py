@@ -19,31 +19,34 @@ class DINOv2Classifier(nn.Module):
         return self.head(self.backbone(x))
 
 
-def create_dinov2(num_classes: int, freeze_base: bool = True) -> DINOv2Classifier:
+def create_dinov2(num_classes: int, freeze_base: bool = True,
+                  pretrained: bool = True) -> DINOv2Classifier:
     print('[model] Loading DINOv2 ViT-S/14 ...')
-    backbone = _load_dinov2('dinov2_vits14', freeze_base)
+    backbone = _load_dinov2('dinov2_vits14', freeze_base, pretrained)
     return DINOv2Classifier(backbone, num_classes, embed_dim=384)
 
 
-def create_dinov2b(num_classes: int, freeze_base: bool = True) -> DINOv2Classifier:
+def create_dinov2b(num_classes: int, freeze_base: bool = True,
+                   pretrained: bool = True) -> DINOv2Classifier:
     print('[model] Loading DINOv2 ViT-B/14 (86M params) ...')
-    backbone = _load_dinov2('dinov2_vitb14', freeze_base)
+    backbone = _load_dinov2('dinov2_vitb14', freeze_base, pretrained)
     return DINOv2Classifier(backbone, num_classes, embed_dim=768)
 
 
-def _load_dinov2(variant: str, freeze_base: bool):
+def _load_dinov2(variant: str, freeze_base: bool, pretrained: bool = True):
     import torch
-    backbone = torch.hub.load('facebookresearch/dinov2', variant, pretrained=True)
+    backbone = torch.hub.load('facebookresearch/dinov2', variant, pretrained=pretrained)
     if freeze_base:
         for p in backbone.parameters():
             p.requires_grad = False
     return backbone
 
 
-def create_convnext_tiny(num_classes: int, freeze_base: bool = True):
+def create_convnext_tiny(num_classes: int, freeze_base: bool = True,
+                         pretrained: bool = True):
     from torchvision.models import convnext_tiny, ConvNeXt_Tiny_Weights
     print('[model] Loading ConvNeXt-Tiny ...')
-    model = convnext_tiny(weights=ConvNeXt_Tiny_Weights.DEFAULT)
+    model = convnext_tiny(weights=ConvNeXt_Tiny_Weights.DEFAULT if pretrained else None)
     if freeze_base:
         for p in model.features.parameters():
             p.requires_grad = False
@@ -56,12 +59,16 @@ def create_convnext_tiny(num_classes: int, freeze_base: bool = True):
 #   'dinov2_vits14'  (default, 22M params, 384-dim)
 #   'dinov2_vitb14'  (optional, 86M params, 768-dim — better ceiling, needs GPU)
 #   'convnext_tiny'  (torchvision, 28M params)
-def create_model(backbone: str, num_classes: int, freeze_base: bool = True) -> nn.Module:
+#
+# pretrained=False skips the download of the pretrained backbone weights.  Use it
+# only when a checkpoint's full state_dict is loaded straight after (resume).
+def create_model(backbone: str, num_classes: int, freeze_base: bool = True,
+                 pretrained: bool = True) -> nn.Module:
     if backbone == 'dinov2_vits14':
-        return create_dinov2(num_classes, freeze_base)
+        return create_dinov2(num_classes, freeze_base, pretrained)
     if backbone == 'dinov2_vitb14':
-        return create_dinov2b(num_classes, freeze_base)
+        return create_dinov2b(num_classes, freeze_base, pretrained)
     if backbone == 'convnext_tiny':
-        return create_convnext_tiny(num_classes, freeze_base)
+        return create_convnext_tiny(num_classes, freeze_base, pretrained)
     raise ValueError(f'Unknown backbone {backbone!r}. '
                      f'Choose dinov2_vits14 | dinov2_vitb14 | convnext_tiny.')
