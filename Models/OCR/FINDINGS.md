@@ -360,13 +360,54 @@ Retrain of run 9 on the regenerated, black-tile-free `char-dataset`.  Config: `-
 | **test top-1 / top-3 / top-5** (`best.pt`) | 0.8005 / 0.8896 / 0.9218 | **0.9998 / 1.0000 / 1.0000** |
 | test macro F1 | n/a | 0.9998 |
 
-Warm-up epochs 1 to 3 gave 0.019 / 0.037 / 0.040; the first unfrozen epoch gave 0.964 and epoch 5 gave 0.998.  After epoch 12 val_acc stayed at 1.0 apart from small dips (worst 0.9991 at the epoch 19 cosine restart).  Val loss fell 1.00 to 0.97 (mixup-inflated) and train accuracy stayed about 0.45 to 0.52.  `progress.json` reports `best_epoch` 17; the score is saturated, so later epochs could not replace it.  The epoch inside `best.pt` itself was not checked.
+Warm-up epochs 1 to 3 gave 0.019 / 0.037 / 0.040; the first unfrozen epoch gave 0.964 and epoch 5 gave 0.998.  After epoch 12 val_acc stayed at 1.0 apart from small dips (worst 0.9991 at the epoch 19 cosine restart).  Val loss fell 1.00 to 0.97 (mixup-inflated) and train accuracy stayed about 0.45 to 0.52.  `progress.json` reports `best_epoch` 17; the score is saturated, so later epochs could not replace it.  The epoch inside `best.pt` is 12 (checked 2026-11-25; the tie at 1.0 kept the first-reached epoch).
 
 **Failure modes (test split):** 2 errors in 9,300, both look-alike syllable pairs (`syl_bc98` as `syl_bcb4`, `syl_ad50` as `syl_ace0`).  Lowest class f1 is 0.968.  The run 9 complex-batchim floor (f1 0.2 to 0.4) and its sink classes are gone, which supports reading them as black-tile artifacts.
 
-**Caveat.**  The split is random per tile from a single draw, with about 124 tiles per class that differ by font, mode and neighbours.  Near-duplicate tiles could sit on both sides of the split, and the test split shares any such leak with val.  This run confirms the black-tile fix; it does not show generalisation to unseen fonts.  A font-held-out split would test that and has not been run.
+**Caveat.**  The split is random per tile from a single draw, with about 124 tiles per class that differ by font, mode and neighbours.  Near-duplicate tiles could sit on both sides of the split, and the test split shares any such leak with val.  This run confirms the black-tile fix; it does not show generalisation to unseen fonts.  A font-held-out split would test that and has not been run.  A byte-level duplicate check on 2026-11-25 found 0 of 9,300 test tiles with an identical copy in train, and `best.pt` got 213 of 213 on test tiles whose font never appears in train for that class (see Run 13, leakage check).
+
+#### Run 13: cjk (clean data, complete 2026-11-24)
+
+Retrain of run 10 on the regenerated, black-tile-free `char-dataset`.  Config as runs 11 and 12 (`--scripts cjk --epochs 36 --freeze-epochs 3 --unfreeze-blocks 4 --batch-size 64 --backbone dinov2_vits14 --grid-mode none --mixup-alpha 0.2 --scheduler cosine-warm --lr 3e-4 --dataset-name char-dataset`).  Started 2026-11-05 on Colab, then resumed on Kaggle after session drops; `progress.json` last saved 2026-11-24 22:07 UTC.  About 5,500 to 5,600 s/epoch warm-up and 6,600 to 7,800 s/epoch fine-tune (epoch 22 took 9,259 s, probably the relaunch).  3,000 classes, 92,174 test images, new split (not split-comparable with run 10).  On 2026-11-12 a Kaggle resume failed with an expired TLS certificate on `dl.fbaipublicfiles.com`; `train.py` now falls back to the checkpoint weights when resuming (`05c9fd0`).  The relaunch log was not kept, so it is not known whether the fallback fired.
+
+| Metric | Run 10 (black-tile bug) | Run 13 (clean) |
+|---|---|---|
+| best val_acc | 0.7102 @ 12 | **0.999924 @ epoch 16** |
+| **test top-1 / top-3 / top-5** (`best.pt`) | 0.7110 / 0.7410 / 0.7560 | **0.9999 (0.999859) / 1.0000 / 1.0000** |
+| test macro F1 | 0.77 | 0.9999 |
+
+Val_acc passed 0.998 at the first unfrozen epoch (4) and was saturated from about epoch 12.  Epochs 17 to 36 stayed between 0.9994 and 0.9999, a spread of about 50 of 92,174 images, so ranking epochs is mostly noise.  The warm restart at epoch 19 cost a little (epoch 22 dipped to 0.999425) and never beat epoch 16.  Train accuracy stays near 0.50 and val loss near 1.16 for the whole run (mixup and label smoothing), not underfitting.  This confirms the run 10 plateau was the black-tile data, not the model.
+
+**Failure modes (test split):** 13 errors in 92,174.  16 of 3,000 classes have f1 below 1.0 and the lowest is 0.931 (`cjk_56d7`, 30 test images).  Nine confusion pairs account for all 13 errors; the largest are `cjk_56d7` as `cjk_53e3` (囗 as 口, 3) and `cjk_5079` as `cjk_4ffb` (3), the rest single look-alike cases.
+
+**Leakage check (2026-11-25, all three clean runs).**  The split is random per tile, so byte-identical tiles can fall on both sides.  The split was rebuilt exactly (test counts match each run's `test_report.json`) and test tiles were hashed (MD5) against train.  Cjk: 30,204 of 92,174 test tiles (32.8%) and 30,045 val tiles have an identical train tile, none under a different label.  Kana: 1,146 of 5,875 (19.5%).  Hangul: 0 of 9,300.  Probable cause, not confirmed: `render_chars_context.py` seeds each tile from the font file path, so faces from one `.ttc` get the same neighbour string and, where the glyph is shared, an identical image.  Accuracy by group, scoring `best.pt` on samples:
+
+| Script | Twin tiles | Non-twin tiles | Unseen (class, font) tiles |
+|---|---|---|---|
+| cjk (epoch 16) | 2,999 / 3,000 (sample) | 4,000 / 4,000 (sample of 61,970) | 2,347 / 2,347 (all) |
+| kana (epoch 32) | 1,104 / 1,146 = 0.9634 (all) | 3,923 / 4,000 = 0.9808 (sample) | 155 / 158 (all) |
+| hangul (epoch 12) | none | 3,998 / 4,000 (sample) | 213 / 213 (all) |
+
+Duplicates do not inflate the scores: twin tiles score no better than non-twin ones (kana twins are lower, since they are the hard small/full-kana look-alikes).  Not tested: typefaces absent from the whole font list, and real Discord screenshots (clean synthetic renders only).  The duplicates still waste training data and could be removed at generation time if the data is regenerated.
+
+#### Promotion check: clean vs legacy checkpoints (2026-11-25)
+
+Before promoting runs 11, 12 and 13, every legacy (July) and clean checkpoint was scored on the same sampled test tiles, restricted to classes both models know (kana 169 of 172, hangul 500 of 500, cjk 1,312 of 3,000, since the legacy cjk model only has the 1,312 classes with at least 5 images).  The test split was rebuilt with seed 42 for each dataset, then shuffled and capped at 600 tiles (kana on legacy tiles has 306).  Eval transform is the plain resize and normalize.  Script and raw results: `cmp.py`, `cmp.json`, `cmp.log` (session scratchpad, not kept in the repo).
+
+| Script | Test tiles | Legacy model | Clean model |
+|---|---|---|---|
+| kana | legacy, n=306 | 0.605 | 0.556 |
+| kana | clean, n=600 | 0.585 | **0.980** |
+| hangul | legacy, n=600 | 0.643 | 0.538 |
+| hangul | clean, n=600 | 0.628 | **1.000** |
+| cjk | legacy, n=600 | 0.695 | **0.728** |
+| cjk | clean, n=600 | 0.660 | **1.000** |
+
+The legacy models score 0.60 to 0.70 on their own tiles, close to the val_acc in their `progress.json` (0.574, 0.671, 0.702), so the rebuilt split looks right.  On real-context tiles the clean models win by 35 to 40 points.  On isolated centered glyphs they are not better: about 5 points lower on kana and 10 points lower on hangul, 3 points higher on cjk.  With 306 to 600 tiles the kana and cjk differences are within sampling noise; the hangul gap is probably real.  The clean models were never trained on isolated glyphs.  Synthetic tiles only; real screenshots and unseen typefaces are untested.
+
+**Decision:** promote all three.  The clean checkpoints are the local `checkpoints/<script>/best.pt`; the legacy models are kept in `checkpoints/archive/legacy/<script>/` (and on Drive in `checkpoints/old/`).  The local kana folder still contains the legacy `last.pt` and `curves.png`; they do not belong to the promoted run and `last.pt` should not be used for `--resume`.
 
 ### Remaining items after run 7
 
-- **Generate + train kana/hangul/cjk real-context data.** Not yet done. `render_chars_context.py --scripts kana hangul cjk --extra-fonts-dir ../../Datasets/google-fonts` into `char-dataset/`, check per-class counts, zip the all-scripts `char-dataset/`, replace `char-dataset.zip` on Drive, then run the three trainings on Colab (`--scheduler cosine-warm`, ~30-40 epochs). Record results here.
+- **Generate + train kana/hangul/cjk real-context data.** Done: runs 11, 12 and 13 (see above); the text below is the original plan. `render_chars_context.py --scripts kana hangul cjk --extra-fonts-dir ../../Datasets/google-fonts` into `char-dataset/`, check per-class counts, zip the all-scripts `char-dataset/`, replace `char-dataset.zip` on Drive, then run the three trainings on Colab (`--scheduler cosine-warm`, ~30-40 epochs). Record results here.
 - **Production integration is out of scope for the investigation.** Run 7's checkpoint proves the real-context approach; wiring the `Models/OCR/` CRAFT+char_classifier pipeline into the shipped `Translation/2-Image/` path (which currently uses EasyOCR) is a separate design question — replace vs post-correct EasyOCR, and how to handle the CJK routing gap — not a config flip.
