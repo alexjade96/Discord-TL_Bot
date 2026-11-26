@@ -21,6 +21,16 @@ def _blank_image() -> np.ndarray:
     return np.zeros((100, 200, 3), dtype=np.uint8)
 
 
+def _readings(*pairs):
+    """extract_readings() result for (text, confidence) pairs, first one preferred."""
+    names = ["per-line", "ko", "ja"]
+    return {
+        "readings": [{"reader": names[i], "text": t, "confidence": c}
+                     for i, (t, c) in enumerate(pairs) if t],
+        "reader_scores": {"zh": 0.7, "ja": 0.7, "ko": 0.7},
+    }
+
+
 def _text_result(src_lang="es", translated="hello", confidence=0.99, method="opus-mt"):
     return {
         "translated_text": translated,
@@ -31,15 +41,15 @@ def _text_result(src_lang="es", translated="hello", confidence=0.99, method="opu
 
 
 # ---------------------------------------------------------------------------
-# translate_image — result is {"auto": {...}, "hint": None, "collected_path": ...}
+# translate_image — result has auto, hint, alternatives, image_hash, collected_path
 # ---------------------------------------------------------------------------
 
 class TestTranslateImage:
     @patch("translate_image.save_submission", return_value=None)
     @patch("translate_image.translate_text")
-    @patch("translate_image.extract_text_combined")
+    @patch("translate_image.extract_readings")
     def test_auto_result_has_expected_keys(self, mock_ocr, mock_translate, _save):
-        mock_ocr.return_value = ("hola mundo", 0.95)
+        mock_ocr.return_value = _readings(("hola mundo", 0.95))
         mock_translate.return_value = _text_result("es", "hello world", 0.99)
 
         result = translate_image(_blank_image())
@@ -51,9 +61,9 @@ class TestTranslateImage:
 
     @patch("translate_image.save_submission", return_value=None)
     @patch("translate_image.translate_text")
-    @patch("translate_image.extract_text_combined")
+    @patch("translate_image.extract_readings")
     def test_ocr_confidence_propagated(self, mock_ocr, mock_translate, _save):
-        mock_ocr.return_value = ("早上好", 0.91)
+        mock_ocr.return_value = _readings(("早上好", 0.91))
         mock_translate.return_value = _text_result("zh-cn", "Good morning", 1.0)
 
         result = translate_image(_blank_image())
@@ -61,9 +71,9 @@ class TestTranslateImage:
 
     @patch("translate_image.save_submission", return_value=None)
     @patch("translate_image.translate_text")
-    @patch("translate_image.extract_text_combined")
+    @patch("translate_image.extract_readings")
     def test_original_text_preserved(self, mock_ocr, mock_translate, _save):
-        mock_ocr.return_value = ("buenos noches", 0.88)
+        mock_ocr.return_value = _readings(("buenos noches", 0.88))
         mock_translate.return_value = _text_result("es", "good evening", 0.97)
 
         result = translate_image(_blank_image())
@@ -71,9 +81,9 @@ class TestTranslateImage:
         assert result["auto"]["translated_text"] == "good evening"
 
     @patch("translate_image.save_submission", return_value=None)
-    @patch("translate_image.extract_text_combined")
+    @patch("translate_image.extract_readings")
     def test_empty_ocr_returns_none_method(self, mock_ocr, _save):
-        mock_ocr.return_value = ("", 0.0)
+        mock_ocr.return_value = _readings(("", 0.0))
 
         result = translate_image(_blank_image())
         auto = result["auto"]
@@ -84,9 +94,9 @@ class TestTranslateImage:
 
     @patch("translate_image.save_submission", return_value=None)
     @patch("translate_image.translate_text")
-    @patch("translate_image.extract_text_combined")
+    @patch("translate_image.extract_readings")
     def test_src_lang_forwarded_to_translate(self, mock_ocr, mock_translate, _save):
-        mock_ocr.return_value = ("konnichiwa", 0.80)
+        mock_ocr.return_value = _readings(("konnichiwa", 0.80))
         mock_translate.return_value = _text_result("ja", "hello", 0.75)
 
         translate_image(_blank_image(), src_lang="ja")
@@ -94,9 +104,9 @@ class TestTranslateImage:
 
     @patch("translate_image.save_submission", return_value=None)
     @patch("translate_image.translate_text")
-    @patch("translate_image.extract_text_combined")
+    @patch("translate_image.extract_readings")
     def test_english_passthrough_method(self, mock_ocr, mock_translate, _save):
-        mock_ocr.return_value = ("hello world", 0.99)
+        mock_ocr.return_value = _readings(("hello world", 0.99))
         mock_translate.return_value = _text_result("en", "hello world", 0.99, "passthrough")
 
         result = translate_image(_blank_image())
@@ -104,10 +114,49 @@ class TestTranslateImage:
 
     @patch("translate_image.save_submission", return_value=None)
     @patch("translate_image.translate_text")
-    @patch("translate_image.extract_text_combined")
+    @patch("translate_image.extract_readings")
     def test_hint_none_when_no_hint_given(self, mock_ocr, mock_translate, _save):
-        mock_ocr.return_value = ("hola", 0.90)
+        mock_ocr.return_value = _readings(("hola", 0.90))
         mock_translate.return_value = _text_result()
 
         result = translate_image(_blank_image())
         assert result["hint"] is None
+
+    @patch("translate_image.save_submission", return_value=None)
+    @patch("translate_image.translate_text")
+    @patch("translate_image.extract_readings")
+    def test_each_close_reading_is_translated(self, mock_ocr, mock_translate, _save):
+        mock_ocr.return_value = _readings(("赢家", 0.9), ("틈중", 0.7))
+        mock_translate.return_value = _text_result()
+
+        result = translate_image(_blank_image())
+
+        assert [r["original_text"] for r in result["alternatives"]] == ["틈중"]
+        assert result["alternatives"][0]["reader"] == "ko"
+        assert result["auto"]["reader"] == "per-line"
+        assert mock_translate.call_count == 2
+
+    @patch("translate_image.save_submission", return_value=None)
+    @patch("translate_image.translate_text")
+    @patch("translate_image.extract_readings")
+    def test_failed_alternative_does_not_break_result(self, mock_ocr, mock_translate, _save):
+        mock_ocr.return_value = _readings(("赢家", 0.9), ("틈중", 0.7))
+        mock_translate.side_effect = [_text_result(), RuntimeError("api down")]
+
+        result = translate_image(_blank_image())
+
+        assert result["alternatives"] == []
+        assert result["auto"]["translated_text"] == "hello"
+
+    @patch("translate_image.save_submission", return_value=None)
+    @patch("translate_image.translate_text")
+    @patch("translate_image.extract_text_hinted", return_value=[])
+    @patch("translate_image.extract_readings")
+    def test_no_alternatives_with_hint(self, mock_ocr, _hinted, mock_translate, _save):
+        mock_ocr.return_value = _readings(("赢家", 0.9), ("틈중", 0.7))
+        mock_translate.return_value = _text_result()
+
+        result = translate_image(_blank_image(), hint_lang="zh-cn")
+
+        assert result["alternatives"] == []
+        assert result["hint"]["method"] == "none"

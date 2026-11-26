@@ -19,6 +19,7 @@ import numpy as np
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 LABELS_FILE = DATA_DIR / "labels.jsonl"
+FEEDBACK_FILE = DATA_DIR / "feedback.jsonl"
 
 # Characters not safe for filenames — replaced with underscores
 _UNSAFE_RE = re.compile(r"[^\w\-]")
@@ -28,7 +29,8 @@ def _ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _image_hash(img: np.ndarray) -> str:
+def image_hash(img: np.ndarray) -> str:
+    """Identifier shared by labels.jsonl and feedback.jsonl."""
     return hashlib.sha1(img.tobytes()).hexdigest()[:16]
 
 
@@ -105,7 +107,7 @@ def save_submission(
 
     _ensure_dirs()
 
-    img_hash = _image_hash(image)
+    img_hash = image_hash(image)
     if img_hash in _existing_hashes():
         return None
 
@@ -131,6 +133,39 @@ def save_submission(
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     return img_path
+
+
+def save_feedback(
+    img_hash: str,
+    options: list[dict],
+    choice: int | None,
+    reader_scores: dict,
+    username: str | None = None,
+) -> None:
+    """Record which OCR reading a user picked.
+
+    Appends to feedback.jsonl and leaves labels.jsonl untouched: a choice is a
+    pointer for manual review, not a verified correction.
+
+    Args:
+        img_hash:      image_hash() of the submitted image.
+        options:       Result dicts in the order shown (option 1 first).
+        choice:        1-based option number, or None for "none are right".
+        reader_scores: Whole-image average confidence per reader.
+        username:      Discord username of the person who chose.
+    """
+    _ensure_dirs()
+    kept = ("reader", "original_text", "translated_text", "ocr_confidence")
+    entry = {
+        "image_hash": img_hash,
+        "choice": choice,
+        "options": [{key: option.get(key) for key in kept} for option in options],
+        "reader_scores": reader_scores,
+        "username": username,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    with FEEDBACK_FILE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def load_labels() -> list[dict]:

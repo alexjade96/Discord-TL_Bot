@@ -4,6 +4,7 @@ Follows the approach from OCR_Models.ipynb:
   - Scale 2x with INTER_CUBIC before OCR for better accuracy on small text
   - Convert to grayscale
   - Three lazy EasyOCR readers (zh/ja/ko each paired with en); best confidence wins
+    per detected line, with close whole-image readings offered as alternatives
 """
 
 from __future__ import annotations
@@ -26,8 +27,22 @@ _DIGIT_BOUNDARY_RE = re.compile(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])")
 # Shorter runs are left alone (likely a single word or intentional token).
 _MERGED_WORD_RE = re.compile(r"[A-Za-z]{15,}")
 
+# A reader whose whole-image average confidence is within this of the best one is
+# offered as an alternative reading (see extract_readings).  Chosen on 4 real
+# screenshots, where near-ties were under 0.05 and clear wins over 0.45; tune it
+# from the choices collected in 0-Data/Image/data/feedback.jsonl.
+CLOSE_SCORE_GAP = 0.05
+MAX_READINGS = 3
+
+# Boxes from different readers overlapping at least this much are the same line.
+_SAME_LINE_OVERLAP = 0.3
+
+# Kana, CJK ideographs and Hangul syllables: what makes two readings differ.
+_ASIAN_RE = re.compile(r"[぀-ヿ㐀-鿿가-힣]")
+
 # EasyOCR enforces that each CJK script can only share a reader with English.
-# Three separate readers cover Chinese / Japanese / Korean; best result wins.
+# Three separate readers cover Chinese / Japanese / Korean; the most confident
+# result for each detected line wins.
 _reader_zh: easyocr.Reader | None = None  # ["en", "ch_sim"]
 _reader_ja: easyocr.Reader | None = None  # ["en", "ja"]
 _reader_ko: easyocr.Reader | None = None  # ["en", "ko"]
@@ -269,39 +284,141 @@ def extract_text(source: str | Path | np.ndarray) -> list[dict]:
     else:
         img = load_image_from_path(source)
 
-    processed = preprocess(img)
+    raws = _read_all(preprocess(img), _READ_KWARGS)
+    return _to_segments(_merge_by_line(raws.values()))
 
-    # Each CJK script requires its own reader. Run all three and pick the
-    # one with the highest average confidence.
-    candidates = [
-        _get_reader_zh().readtext(processed, **_READ_KWARGS),
-        _get_reader_ja().readtext(processed, **_READ_KWARGS),
-        _get_reader_ko().readtext(processed, **_READ_KWARGS),
-    ]
 
-    def _avg_conf(raw):
-        confs = [c for _, text, c in raw if text.strip()]
-        return sum(confs) / len(confs) if confs else 0.0
+def _read_all(processed: np.ndarray, read_kwargs: dict) -> dict:
+    """Run every CJK reader on one image: {reader name: raw readtext results}.
 
-    results = max(candidates, key=_avg_conf)
+    Each CJK script requires its own reader.
+    """
+    return {
+        "zh": _get_reader_zh().readtext(processed, **read_kwargs),
+        "ja": _get_reader_ja().readtext(processed, **read_kwargs),
+        "ko": _get_reader_ko().readtext(processed, **read_kwargs),
+    }
+
+
+def _avg_conf(raw: list) -> float:
+    confs = [float(c) for _, text, c in raw if text.strip()]
+    return sum(confs) / len(confs) if confs else 0.0
+
+
+def _extent(bbox: list) -> tuple[float, float, float, float]:
+    xs = [pt[0] for pt in bbox]
+    ys = [pt[1] for pt in bbox]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _overlap(a: list, b: list) -> float:
+    """Intersection over union of two boxes' axis-aligned extents."""
+    ax0, ay0, ax1, ay1 = _extent(a)
+    bx0, by0, bx1, by1 = _extent(b)
+    inter = max(0, min(ax1, bx1) - max(ax0, bx0)) * max(0, min(ay1, by1) - max(ay0, by0))
+    union = (ax1 - ax0) * (ay1 - ay0) + (bx1 - bx0) * (by1 - by0) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _merge_by_line(raws) -> list:
+    """Combine several readers' results, keeping the most confident read of each box.
+
+    One reader winning the whole image loses lines written in another script,
+    e.g. a Chinese name in a mostly English screenshot read as Korean.
+    """
+    pool = sorted(
+        (item for raw in raws for item in raw if item[1].strip()),
+        key=lambda item: -item[2],
+    )
+    kept: list = []
+    for item in pool:
+        if all(_overlap(item[0], other[0]) < _SAME_LINE_OVERLAP for other in kept):
+            kept.append(item)
+    return kept
+
+
+def _to_segments(raw: list) -> list[dict]:
+    """Raw readtext results as segment dicts in reading order.
+
+    Reading order is top-to-bottom, then left-to-right for boxes whose vertical
+    centres are within half a box height of the line's first box.
+    """
+    lines: list = []
+    for item in sorted(raw, key=lambda item: _extent(item[0])[1]):
+        _, top, _, bottom = _extent(item[0])
+        centre = (top + bottom) / 2
+        if lines and centre - lines[-1][0] < (bottom - top) / 2:
+            lines[-1][1].append(item)
+        else:
+            lines.append((centre, [item]))
 
     segments = []
-    for bbox, text, confidence in results:
-        text = _split_merged_words(text.strip())
-        if not text:
-            continue
-        segments.append({
-            "text": text,
-            "confidence": round(confidence, 4),
-            "bbox": _scale_bbox(bbox),
-            "_top_y": min(pt[1] for pt in bbox),
-        })
-
-    segments.sort(key=lambda s: s["_top_y"])
-    for s in segments:
-        del s["_top_y"]
-
+    for _, items in lines:
+        for bbox, text, confidence in sorted(items, key=lambda item: _extent(item[0])[0]):
+            text = _split_merged_words(text.strip())
+            if not text:
+                continue
+            segments.append({
+                "text": text,
+                "confidence": round(confidence, 4),
+                "bbox": _scale_bbox(bbox),
+            })
     return segments
+
+
+def _reading(name: str, segments: list[dict]) -> dict:
+    confs = [s["confidence"] for s in segments]
+    return {
+        "reader": name,
+        "text": " ".join(s["text"] for s in segments),
+        "confidence": round(sum(confs) / len(confs), 4) if confs else 0.0,
+    }
+
+
+def extract_readings(source: str | Path | np.ndarray) -> dict:
+    """OCR an image and return every reading worth showing.
+
+    Args:
+        source: Discord attachment URL, local file path, or pre-loaded BGR numpy array.
+
+    Returns:
+        dict with keys:
+            readings      -- [{reader, text, confidence}], empty if no text.  The
+                             first is the per-line merge ('per-line').  It is
+                             followed by whole-image readings whose average
+                             confidence is within CLOSE_SCORE_GAP of the best,
+                             skipping any with the same CJK/kana/Hangul
+                             characters as one already listed.  At most
+                             MAX_READINGS in total.
+            reader_scores -- {reader: whole-image average confidence}
+    """
+    if isinstance(source, np.ndarray):
+        img = source
+    elif isinstance(source, str) and source.startswith(("http://", "https://")):
+        img = load_image_from_url(source)
+    else:
+        img = load_image_from_path(source)
+
+    raws = _read_all(preprocess(img), _READ_KWARGS)
+    scores = {name: round(_avg_conf(raw), 4) for name, raw in raws.items()}
+
+    merged = _reading("per-line", _to_segments(_merge_by_line(raws.values())))
+    if not merged["text"]:
+        return {"readings": [], "reader_scores": scores}
+
+    readings = [merged]
+    seen = {"".join(_ASIAN_RE.findall(merged["text"]))}
+    best = max(scores.values())
+    for name in sorted(scores, key=scores.get, reverse=True):
+        if best - scores[name] > CLOSE_SCORE_GAP or len(readings) >= MAX_READINGS:
+            break
+        reading = _reading(name, _to_segments(raws[name]))
+        key = "".join(_ASIAN_RE.findall(reading["text"]))
+        if reading["text"] and key not in seen:
+            seen.add(key)
+            readings.append(reading)
+
+    return {"readings": readings, "reader_scores": scores}
 
 
 def extract_text_combined(source: str | Path | np.ndarray) -> tuple[str, float]:
@@ -343,33 +460,8 @@ def extract_text_hinted(
     """
     getter = _LANG_TO_READER.get(lang_code)
     if getter is None:
-        # Non-CJK: fall back to the reader with highest confidence across all three
-        candidates = [
-            _get_reader_zh().readtext(processed, **read_kwargs),
-            _get_reader_ja().readtext(processed, **read_kwargs),
-            _get_reader_ko().readtext(processed, **read_kwargs),
-        ]
-
-        def _avg(raw):
-            confs = [c for _, t, c in raw if t.strip()]
-            return sum(confs) / len(confs) if confs else 0.0
-
-        raw = max(candidates, key=_avg)
+        # Non-CJK: no single reader to target, so merge all three per line
+        raw = _merge_by_line(_read_all(processed, read_kwargs).values())
     else:
         raw = getter().readtext(processed, **read_kwargs)
-
-    segments = []
-    for bbox, text, confidence in raw:
-        text = _split_merged_words(text.strip())
-        if not text:
-            continue
-        segments.append({
-            "text": text,
-            "confidence": round(confidence, 4),
-            "bbox": _scale_bbox(bbox),
-            "_top_y": min(pt[1] for pt in bbox),
-        })
-    segments.sort(key=lambda s: s["_top_y"])
-    for s in segments:
-        del s["_top_y"]
-    return segments
+    return _to_segments(raw)

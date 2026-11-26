@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "1-Text"))
 from detect import confidence_for_language  # noqa: E402
 
 from ocr import (
-    extract_text_combined,
+    extract_readings,
     extract_text_hinted,
     load_image_from_url,
     load_image_from_path,
@@ -41,7 +41,7 @@ from ocr import (
     _READ_KWARGS,
 )
 sys.path.insert(0, str(Path(__file__).parent.parent / "0-Data" / "Image" / "training"))
-from collect_image import save_submission  # noqa: E402
+from collect_image import image_hash, save_submission  # noqa: E402
 
 
 def _combined_score(ocr_conf: float, lang_conf: float) -> float:
@@ -49,27 +49,33 @@ def _combined_score(ocr_conf: float, lang_conf: float) -> float:
     return ocr_conf * lang_conf
 
 
-def _run_pass(
-    raw_image: np.ndarray,
+def _run_hint_pass(
     processed: np.ndarray,
+    hint_lang: str,
+    tgt_lang: str | None = None,
+) -> dict:
+    """OCR with the hinted language's reader, then translate."""
+    segments = extract_text_hinted(processed, hint_lang, _READ_KWARGS)
+    if segments:
+        ocr_text = " ".join(s["text"] for s in segments)
+        ocr_conf = round(sum(s["confidence"] for s in segments) / len(segments), 4)
+    else:
+        ocr_text, ocr_conf = "", 0.0
+    return _translate_pass(ocr_text, ocr_conf, src_lang=hint_lang, hint_lang=hint_lang,
+                           tgt_lang=tgt_lang)
+
+
+def _translate_pass(
+    ocr_text: str,
+    ocr_conf: float,
     src_lang: str | None,
     hint_lang: str | None,
     tgt_lang: str | None = None,
 ) -> dict:
-    """Run OCR (with optional hint-specific reader) then translate.
+    """Translate one OCR reading.
 
     Returns the full result dict plus ocr_confidence and score.
     """
-    if hint_lang:
-        segments = extract_text_hinted(processed, hint_lang, _READ_KWARGS)
-        if segments:
-            ocr_text = " ".join(s["text"] for s in segments)
-            ocr_conf = round(sum(s["confidence"] for s in segments) / len(segments), 4)
-        else:
-            ocr_text, ocr_conf = "", 0.0
-    else:
-        ocr_text, ocr_conf = extract_text_combined(raw_image)
-
     if not ocr_text:
         return {
             "original_text": "",
@@ -78,7 +84,7 @@ def _run_pass(
             "confidence": None,
             "ocr_confidence": 0.0,
             "method": "none",
-            "_score": 0.0,
+            "score": 0.0,
         }
 
     result = translate_text(ocr_text, src_lang=src_lang, tgt_lang=tgt_lang)
@@ -99,7 +105,7 @@ def _run_pass(
         "confidence": lang_conf,
         "ocr_confidence": ocr_conf,
         "method": result["method"],
-        "_score": score,
+        "score": score,
     }
 
 
@@ -127,10 +133,16 @@ def translate_image(
 
     Returns:
         dict with keys:
-            auto  -- result dict from the auto-detect pass (always present)
-            hint  -- result dict from the hinted pass, or None if no hint given
+            auto           -- result dict from the auto-detect pass (always present)
+            hint           -- result dict from the hinted pass, or None if no hint given
+            alternatives   -- result dicts for other close OCR readings (see
+                              ocr.extract_readings); empty when a hint is given
+            reader_scores  -- {reader: whole-image average OCR confidence}
+            image_hash     -- identifies the image in collected data and feedback
+            collected_path -- saved image path, or None if not saved
 
         Each result dict contains:
+            reader          -- 'per-line', 'zh', 'ja' or 'ko' (auto and alternatives)
             original_text   -- raw OCR output
             translated_text -- English translation
             source_language -- detected or provided langdetect code
@@ -146,17 +158,32 @@ def translate_image(
     else:
         raw_image = load_image_from_path(source)
 
-    processed = preprocess(raw_image)
+    ocr_result = extract_readings(raw_image)
+    readings = ocr_result["readings"]
+    first = readings[0] if readings else {"reader": "per-line", "text": "", "confidence": 0.0}
 
-    auto = _run_pass(raw_image, processed, src_lang=src_lang, hint_lang=None, tgt_lang=tgt_lang)
-    auto["score"] = auto.pop("_score")
+    auto = _translate_pass(first["text"], first["confidence"], src_lang=src_lang,
+                           hint_lang=None, tgt_lang=tgt_lang)
+    auto["reader"] = first["reader"]
 
     hint = None
     if hint_lang and hint_lang != src_lang:
-        hint = _run_pass(raw_image, processed, src_lang=hint_lang, hint_lang=hint_lang, tgt_lang=tgt_lang)
-        hint["score"] = hint.pop("_score")
-    else:
-        auto.pop("_score", None)
+        hint = _run_hint_pass(preprocess(raw_image), hint_lang, tgt_lang=tgt_lang)
+
+    # Close alternative readings, each translated so the user can compare them.
+    # A hint already gives a second reading, so none are added alongside it.
+    alternatives = []
+    if not hint_lang:
+        for reading in readings[1:]:
+            try:
+                alternative = _translate_pass(reading["text"], reading["confidence"],
+                                              src_lang=src_lang, hint_lang=None,
+                                              tgt_lang=tgt_lang)
+            except Exception:
+                logger.warning("Failed to translate an alternative reading", exc_info=True)
+                continue
+            alternative["reader"] = reading["reader"]
+            alternatives.append(alternative)
 
     # Save the auto pass to the training dataset (non-fatal)
     collected_path: str | None = None
@@ -175,7 +202,14 @@ def translate_image(
     except Exception:
         logger.warning("Failed to save image to training dataset", exc_info=True)
 
-    return {"auto": auto, "hint": hint, "collected_path": collected_path}
+    return {
+        "auto": auto,
+        "hint": hint,
+        "alternatives": alternatives,
+        "reader_scores": ocr_result["reader_scores"],
+        "image_hash": image_hash(raw_image),
+        "collected_path": collected_path,
+    }
 
 
 if __name__ == "__main__":

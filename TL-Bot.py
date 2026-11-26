@@ -27,6 +27,7 @@ from detect import analyze_segments  # noqa: E402
 # Add image translation package to path
 sys.path.insert(0, str(Path(__file__).parent / "Translation" / "2-Image"))
 from translate_image import translate_image  # noqa: E402
+from collect_image import save_feedback as save_image_feedback  # noqa: E402
 from ocr import extract_text_combined, extract_text  # noqa: E402
 from synthesize_image import synthesize_image, synthesize_text_to_image  # noqa: E402
 
@@ -67,6 +68,7 @@ _LOG_BACKUP_COUNT = 5                  # number of rotated files to retain
 # Discord message length cap; actual limit is 2000 but we leave a 100-char
 # safety margin for the truncation notice appended below.
 _DISCORD_MSG_LIMIT = 1900
+_READING_CHOICE_TIMEOUT = 600  # seconds the image-reading choice buttons stay active
 
 # Logging handler setup
 logger = logging.getLogger("discord")
@@ -570,6 +572,94 @@ async def _run_text_translate(
                                     username=username, source_type="text")
 
 
+def _fmt_readings(options: list[dict], tgt_lang: str | None, extra: str = "") -> str:
+    """Format several OCR readings as numbered options that fit one Discord message.
+
+    Each option is cut to an equal share so every one stays visible, and the
+    closing question is never truncated away.
+    """
+    question = "\n\n**Which reading matches the image?**"
+    share = (_DISCORD_MSG_LIMIT - len(question) - 10) // len(options)
+    blocks = []
+    for number, option in enumerate(options, 1):
+        block = _fmt_result(option, f"Option {number}", tgt_lang, ocr=True)
+        if len(block) > share:
+            block = block[:share - 2] + " …"
+        blocks.append(block)
+    body = "\n\n".join(blocks + ([extra] if extra else []))
+    room = _DISCORD_MSG_LIMIT - len(question)
+    if len(body) > room:
+        body = body[:room - 2] + " …"
+    return body + question
+
+
+class _ReadingChoiceView(discord.ui.View):
+    """Buttons letting the requester say which OCR reading matches the image."""
+
+    def __init__(
+        self,
+        requester_id: int,
+        content: str,
+        options: list[dict],
+        image_hash: str,
+        reader_scores: dict,
+        username: str,
+    ) -> None:
+        super().__init__(timeout=_READING_CHOICE_TIMEOUT)
+        self.requester_id = requester_id
+        self.content = content
+        self.options = options
+        self.image_hash = image_hash
+        self.reader_scores = reader_scores
+        self.username = username
+        self.message: discord.Message | None = None
+        for number in range(1, len(options) + 1):
+            self._add_choice(str(number), number, discord.ButtonStyle.primary)
+        self._add_choice("None are right", None, discord.ButtonStyle.secondary)
+
+    def _add_choice(self, label: str, choice: int | None, style: discord.ButtonStyle) -> None:
+        button = discord.ui.Button(label=label, style=style)
+
+        async def on_click(interaction: discord.Interaction) -> None:
+            await self.record(interaction, choice)
+
+        button.callback = on_click
+        self.add_item(button)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.requester_id:
+            return True
+        await interaction.response.send_message(
+            "Only the person who asked for this translation can answer.", ephemeral=True
+        )
+        return False
+
+    async def record(self, interaction: discord.Interaction, choice: int | None) -> None:
+        """Save the first choice made and replace the buttons with a confirmation."""
+        if self.is_finished():
+            return
+        self.stop()
+        picked = f"option {choice}" if choice else "none of the options"
+        try:
+            save_image_feedback(self.image_hash, self.options, choice,
+                                self.reader_scores, self.username)
+            note = f"_You chose {picked}.  Thanks, it was saved for review._"
+            logger.info("Image reading choice: user=%s | image=%s | choice=%s",
+                        self.username, self.image_hash, choice)
+        except Exception:
+            logger.warning("Failed to save image reading choice", exc_info=True)
+            note = f"_You chose {picked}, but it could not be saved._"
+        await interaction.response.edit_message(content=f"{self.content}\n{note}", view=None)
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(view=None)
+        except discord.HTTPException:
+            logger.debug("Could not remove expired reading buttons", exc_info=True)
+
+
 async def _handle_image(
     attachment: discord.Attachment,
     from_lang: str | None,
@@ -578,6 +668,7 @@ async def _handle_image(
     synthesize: str | None,
     channel: discord.abc.Messageable,
     author_name: str,
+    author_id: int,
 ) -> None:
     """Verify, translate, and respond for an image attachment."""
     # 1. Verify
@@ -636,18 +727,30 @@ async def _handle_image(
         if auto["method"] == "none":
             await status.edit(content="No text detected in the image.")
         else:
-            parts = [_fmt_result(auto, "Auto", to_lang, ocr=True)]
-            if hint:
-                from_lang_name = get_language_name(from_lang)
-                if hint["method"] != "none":
-                    parts.append(_fmt_result(hint, f"Hint ({from_lang_name})", to_lang, ocr=True))
-                else:
-                    parts.append(f"**Hint ({from_lang_name})** No text detected with hinted reader.")
+            analysis = ""
             if analyze and auto["original_text"]:
                 analysis = await asyncio.to_thread(_fmt_analyze, auto["original_text"])
+            alternatives = result.get("alternatives") or []
+            if alternatives:
+                options = [auto, *alternatives]
+                content = _fmt_readings(options, to_lang, analysis)
+                view = _ReadingChoiceView(author_id, content, options, result["image_hash"],
+                                          result["reader_scores"], author_name)
+                view.message = await status.edit(content=content, view=view)
+            else:
+                parts = [_fmt_result(auto, "Auto", to_lang, ocr=True)]
+                if hint:
+                    from_lang_name = get_language_name(from_lang)
+                    if hint["method"] != "none":
+                        parts.append(_fmt_result(hint, f"Hint ({from_lang_name})", to_lang, ocr=True))
+                    else:
+                        parts.append(f"**Hint ({from_lang_name})** No text detected with hinted reader.")
                 if analysis:
                     parts.append(analysis)
-            await status.edit(content="\n\n".join(parts))
+                final_msg = "\n\n".join(parts)
+                if len(final_msg) > _DISCORD_MSG_LIMIT:
+                    final_msg = final_msg[:_DISCORD_MSG_LIMIT] + "\n_[message truncated]_"
+                await status.edit(content=final_msg)
 
             if synthesize and auto["translated_text"] and auto["method"] != "none":
                 if synthesize == "image":
@@ -1740,7 +1843,7 @@ async def on_message(message):
         if message.attachments:
             for attachment in message.attachments:
                 if "image" in attachment.content_type:
-                    await _handle_image(attachment, from_lang, to_lang, analyze, synthesize, message.channel, message.author.name)
+                    await _handle_image(attachment, from_lang, to_lang, analyze, synthesize, message.channel, message.author.name, message.author.id)
                 elif "audio" in attachment.content_type:
                     await _handle_audio(attachment, from_lang, to_lang, analyze, synthesize, message.channel, message.author.name)
                 elif "video" in attachment.content_type:
