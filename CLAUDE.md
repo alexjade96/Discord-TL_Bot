@@ -65,6 +65,7 @@ Language names/codes are resolved via `parse_language_hint()` in `Translation/1-
 - `_handle_text_file(attachment, ...)` — size gate + safety check + decode + truncate + translate + collect + optional synthesis
 - `_handle_text_inline(text, ...)` — same-lang check + `_run_text_translate`
 - `_handle_video(attachment, ...)` — size gate + magic byte check + extract audio (PyAV) + Whisper transcribe + translate + collect + optional synthesis
+- When `_handle_image` gets `alternatives`, it shows them as numbered options (`_fmt_readings`, trimmed to `_DISCORD_MSG_LIMIT` with every option kept visible) with `_ReadingChoiceView` buttons: one per option plus "None are right". Only the requester (`author_id`) can answer, once; buttons expire after `_READING_CHOICE_TIMEOUT` (600 s) or a bot restart. The choice goes to `feedback.jsonl` via `collect_image.save_feedback()`. `--analyze` and `--synthesize` use option 1.
 - `_handle_test(channel, author_name, lang_arg)` — resolves language key, translates built-in script, sends `.txt`/`.mp3`/`.png` in one message
 - `_handle_prompt(text, channel, author_name)` — sends `_Thinking..._` status, runs `prompt.ask()` in a thread, edits status with reply; per-channel history (`_PROMPT_HISTORY`) capped at `_PROMPT_HISTORY_LIMIT` turns
 
@@ -161,7 +162,9 @@ Shared helpers:
 ### Image Translation (`Translation/2-Image/`)
 
 - **`ocr.py`** — EasyOCR pipeline with OpenCV preprocessing:
-  - Three lazy EasyOCR readers (zh/ja/ko, each paired with en). Best average confidence wins on auto-detect; specific reader used when hinted.
+  - Three lazy EasyOCR readers (zh/ja/ko, each paired with en). On auto-detect all three run and the most confident result **per detected line** is kept (`_merge_by_line`, overlap ≥ `_SAME_LINE_OVERLAP` = 0.3); a specific reader is used when hinted. Picking one reader for the whole image previously read Chinese names in English screenshots as Korean or Japanese (4 real screenshots: 17/26 → 26/26 Chinese characters; 28 rendered images: 0.933 → 0.975).
+  - `extract_readings(source)` — returns `{readings, reader_scores}`. `readings[0]` is the per-line merge; whole-image readings within `CLOSE_SCORE_GAP` (0.05) of the best average confidence follow, skipping any whose CJK/kana/Hangul characters match one already listed, up to `MAX_READINGS` (3). The gap was set from only 4 real images; tune it from `feedback.jsonl`.
+  - Segments are in reading order: top-to-bottom, then left-to-right within a line.
   - Post-processing: `_split_merged_words()` — splits letter↔digit boundaries (`_DIGIT_BOUNDARY_RE`) then applies wordninja to any 15+ character pure-Latin run to recover merged words.
   - Six preprocessing variants (`preprocess` is the production default):
     - `preprocess()` — baseline: 2× INTER_CUBIC + grayscale
@@ -170,12 +173,13 @@ Shared helpers:
     - `preprocess_otsu()` — baseline + Otsu binarization; degrades on complex images, do not use as default
     - `preprocess_light_denoise()` — LANCZOS4 + lighter denoise(h=2) + CLAHE(4×4) + unsharp; most consistent challenger to baseline
     - `preprocess_bilateral()` — LANCZOS4 + bilateral filter(d=9) + CLAHE(4×4) + unsharp; strong on clean images, degrades on complex screenshots
-  - `extract_text(source)` — returns sorted segment list `[{text, confidence, bbox}]`
+  - `extract_text(source)` — returns the per-line merge as a segment list `[{text, confidence, bbox}]` in reading order
   - `extract_text_combined(source)` — returns `(combined_text, avg_confidence)`
-  - `extract_text_hinted(processed, lang_code, read_kwargs)` — uses script-appropriate reader
+  - `extract_text_hinted(processed, lang_code, read_kwargs)` — uses script-appropriate reader; non-CJK hints use the per-line merge
 
 - **`translate_image.py`** — Full image pipeline (load → OCR → detect → translate):
-  - Dual-pass when `--from` is given: auto pass (best-confidence reader) + hinted pass (script-targeted reader). Both returned as `{auto, hint}`.
+  - Dual-pass when `--from` is given: auto pass (per-line merge) + hinted pass (script-targeted reader). Both returned as `{auto, hint}`.
+  - Without `--from`, each further reading from `extract_readings()` is translated into `alternatives` (a failed alternative is logged and dropped). The result also carries `reader_scores` and `image_hash`.
   - Score = `ocr_confidence × lang_confidence` for comparison.
   - After each auto pass, calls `collect_image.save_submission()` (imported from `0-Data/Image/training/`) to store the image + labels for training (non-fatal if it fails).
   - Production default uses `preprocess()` (baseline).
@@ -251,6 +255,23 @@ Translation/0-Data/
 ```
 
 Whether a correction exists is inferred from data — `correct_text != null` means a human override is in effect. No separate `reviewed` flag.
+
+#### `feedback.jsonl` schema (`0-Data/Image/data/`)
+
+Appended when a user picks an image reading.  A choice is a pointer for manual review, **not** a verified correction: it never writes `correct_text`.
+
+```jsonc
+{
+  "image_hash": "<sha1[:16]>",     // matches labels.jsonl image_hash
+  "choice": 1,                     // 1-based option number; null = "None are right"
+  "options": [                     // in the order shown
+    {"reader": "per-line", "original_text": "...", "translated_text": "...", "ocr_confidence": 0.86}
+  ],
+  "reader_scores": {"zh": 0.736, "ja": 0.7229, "ko": 0.7659},
+  "username": "discorduser",
+  "timestamp": "2026-..."
+}
+```
 
 #### `text_submissions.jsonl` schema
 
@@ -540,6 +561,9 @@ Models/
       sample_craft.py      ← end-to-end test harness; generates synthetic Discord image
     char_classifier/
       segment.py      ← column-projection character segmenter
+      labels.py       ← the only class-label → character decoder
+      vocab.py        ← class-list coverage vs standard character sets
+      eval_real.py    ← staged comparison on annotated real screenshots
       data.py         ← dataset builder (multi-dir, max_per_class cap)
       train.py        ← training CLI (auto-scopes checkpoints per script)
       engine.py       ← train_loop, mixup, gradient clipping
@@ -577,7 +601,7 @@ Production feature code never lives under `Models/`. Each `Models/<Area>/` is th
 - CJK: only 1,312 of 3,000 classes have ≥ 5 images; the rest are skipped by `build_dataset`. Most CJK classes have 3–4 images because many Windows fonts lack full Joyo coverage — and because the legacy generator's `copy_system_fonts()` skipped `.ttc` collections entirely (fixed for the v2 pipeline; see below). Viable CJK classes contribute ~7,354 training samples.
 - Kana: 3 of 172 classes empty (U+3094/3095/3096 are obsolete kana not in Windows fonts).
 - Latin (legacy only — Latin now trains on `char-dataset`, the real-context v2 pipeline): 77,799 images across 62 classes.
-- These sparse counts are what the runs-8+ real-context migration addresses: the v2 generator now reads `.ttc`/`.otc` faces and takes `--extra-fonts-dir Models/Datasets/google-fonts` (Noto Sans CJK), which alone gives full coverage of every kana / top-500 hangul / top-3000 CJK class in 7 weights × 4 regional variants.
+- These sparse counts are what the runs-8+ real-context migration addresses: the v2 generator now reads `.ttc`/`.otc` faces and takes `--extra-fonts-dir Models/Datasets/google-fonts` (Noto Sans CJK), which alone gives full coverage of every kana / listed hangul (500) / CJK (3,000) class (list sizes, not frequency ranks; see the vocabulary gap below) in 7 weights × 4 regional variants.
 
 #### chat-dataset (`utils/generators/build_chat.py`)
 
@@ -659,7 +683,7 @@ Writes `config.json` at training start so `compare.py` can reload the correct ba
 
 **Training state:** Latin's promoted checkpoint is run 7's `latin_ctx/best.pt` (`char-dataset-ctx` full/uncapped real-context data, `grid_mode=none`, best val_acc **0.911438** @ epoch 20/36) — it superseded run 6's `latin_ctx-small/best.pt` (0.9023) by +0.92 pt val_acc with the targeted `low_i` stroke-fragment pathology holding at its run-6 floor (13 errors, no regression). See `Models/OCR/FINDINGS.md` § "Latin Tile-Context Investigation (Runs 3-7)" for the full history and the run-7 conclusions (uncapped data helps only marginally; ~24-28 epochs is enough for this config — do not budget 36). Run 7 confirmed complete via `Models/colab_train.ipynb` (Drive `checkpoints/latin_ctx/`); the promoted default for *new* runs stays plain `char-dataset` pending a separate decision on bumping it to the uncapped variant.
 
-**Kana/hangul/cjk real-context migration (runs 8 to 13, started 2026-09-01, complete 2026-11-24):** these three scripts were moved off the legacy isolated-tile pipeline onto real-context data, the same change that fixed Latin. `render_chars_context.py` already accepts `--scripts kana|hangul|cjk`; the blocker was font coverage. Two fixes landed: (1) `render_chars.py`'s `copy_system_fonts()` now includes `.ttc`/`.otc` collections (`build_font_meta` / `iter_font_faces` expand each collection's faces separately) — Windows CJK fonts like MS Gothic, Microsoft YaHei, YuGothic, MingLiU, MS JhengHei are `.ttc`-only and were silently skipped before, starving CJK of fonts; (2) Noto Sans CJK (28 OTFs, 7 weights × jp/kr/sc/tc, full coverage of every kana / top-500 hangul / top-3000 CJK class) added under `Models/Datasets/google-fonts/` (gitignored), passed to the generators via `--extra-fonts-dir Models/Datasets/google-fonts`. Per-script runs use `--scheduler cosine-warm`, `--lr 3e-4`, `--freeze-epochs 3`, ~40 epochs (both kana and hangul were still climbing at epoch 36), `grid_mode` left at the `none` default.
+**Kana/hangul/cjk real-context migration (runs 8 to 13, started 2026-09-01, complete 2026-11-24):** these three scripts were moved off the legacy isolated-tile pipeline onto real-context data, the same change that fixed Latin. `render_chars_context.py` already accepts `--scripts kana|hangul|cjk`; the blocker was font coverage. Two fixes landed: (1) `render_chars.py`'s `copy_system_fonts()` now includes `.ttc`/`.otc` collections (`build_font_meta` / `iter_font_faces` expand each collection's faces separately) — Windows CJK fonts like MS Gothic, Microsoft YaHei, YuGothic, MingLiU, MS JhengHei are `.ttc`-only and were silently skipped before, starving CJK of fonts; (2) Noto Sans CJK (28 OTFs, 7 weights × jp/kr/sc/tc, full coverage of every kana / listed hangul (500) / CJK (3,000) class (list sizes, not frequency ranks; see the vocabulary gap below)) added under `Models/Datasets/google-fonts/` (gitignored), passed to the generators via `--extra-fonts-dir Models/Datasets/google-fonts`. Per-script runs use `--scheduler cosine-warm`, `--lr 3e-4`, `--freeze-epochs 3`, ~40 epochs (both kana and hangul were still climbing at epoch 36), `grid_mode` left at the `none` default.
 
 **Status (2026-10-16): runs 8, 9 and 10 are all trained but are confounded by a generator bug, and the data has been regenerated.**  `render_chars_context.py` drew each string on a fixed 400 px canvas starting at its centre; at 64 pt a target preceded by 3 full-width neighbours fell off the right edge and PIL filled the out-of-bounds crop with pure black.  About 1/3 of kana/cjk tiles (31.6% / 34.6% at least 60% black), and 5% of hangul (34% at least 20% black) were affected; Latin only marginally (8.8% of tiles at least 20% black, mostly real ink).  The regenerated set measures 0.00% mostly-black tiles in all four scripts.  Measured on run 10: accuracy was 0.999 on tiles under 40% black and 0.13 on tiles at least 60% black, which is the whole of the 0.711 "plateau".  Fixed by sizing the canvas to the text and refusing out-of-bounds crops, with a post-render audit that warns above 1% black tiles.  Full analysis in `Models/OCR/FINDINGS.md` § "Run 10: cjk".  The runs 8 to 10 numbers below are historical; kana (run 11, test top-1 0.9772) and hangul (run 12, test top-1 0.9998) have been retrained on clean data; cjk (run 13, test top-1 0.9999) has too, so all three scripts now have clean-data results.  The run signature now includes the dataset manifest signature, so `--resume` against regenerated data archives the old checkpoint instead of resuming it.  `train.py` also saves `test_report.json` next to `progress.json`.
 
@@ -677,6 +701,25 @@ Status before the bug was found (2026-09-08):
 #### `segment.py` — column-projection character segmenter
 
 `split_into_chars(crop) → list[Image]`: finds inter-character ink-gap columns in a word/line crop and returns individual char crops. Default sigma=0.0 (no Gaussian smoothing) — smoothing fills typeset inter-character gaps and must not be used for clean text. Only pass `sigma=0.5` for heavily degraded or handwritten input.
+
+#### Vocabulary and real-sample checks (`vocab.py`, `eval_real.py`)
+
+Run these before generating data, before training and before promoting.  Test accuracy cannot show a missing class or a broken pipeline stage.
+
+**Known gap (2026-11-25):** the cjk list covers 25% of GB2312 level 1 and 26% of JIS level 1, hangul covers 13% of KS X 1001, and kana lacks ー.  `_JOYO_CPS` and `_HANGUL_FREQ_TOP` in `render_chars.py` are incomplete and the lists were padded in code order.  Not yet rebuilt.  On 4 real screenshots production EasyOCR read 17/26 Chinese and 220/229 Latin characters against 1/26 and 33/229 for the CRAFT + classifier path (the classifier alone got 17/17 in-vocabulary glyphs from hand-placed boxes).  Do not wire `Models/OCR/` into the bot on test accuracy alone.  Details in `Models/OCR/FINDINGS.md` § "Real-sample test and vocabulary gap".
+
+```powershell
+# From Models/utils/generators/ -- check class lists without rendering
+.venv\Scripts\python.exe render_chars_context.py --scripts all --check-only
+#   add --min-coverage 0.9 to abort a render whose lists fall short (default: warn only)
+
+# From Models/OCR/
+.venv\Scripts\python.exe -m char_classifier.vocab --check-weights   # exit 1 on any problem
+.venv\Scripts\python.exe -m char_classifier.eval_real               # all stages
+.venv\Scripts\python.exe -m char_classifier.eval_real --stages vocab boxes --checkpoints <dir>
+```
+
+`eval_real` reads `Translation/0-Data/Image/data/eval_set.json` (gitignored; format in the module docstring) and writes `real_report.json`.  Add newly collected screenshots there; only cjk, kana and hangul runs take glyph boxes.  `train.py` prints the vocabulary report before epoch 1 and saves it, plus real-box accuracy where the annotation file exists, in `test_report.json`.  Class labels are decoded only by `char_classifier/labels.py`; do not add another decoder.
 
 #### `compare.py` — OCR comparison harness
 
@@ -725,7 +768,7 @@ Always run scripts with `.venv\Scripts\python.exe` — the system Python lacks `
 - **Secrets**: `DISCORD_BOT_TOKEN` and `HF_TOKEN` must never be hardcoded; load from `.env` (gitignored).
 - **No git co-author tags**: Do not add `Co-Authored-By: Claude` lines to commits in this repo.
 - **Gitignored data dirs**: `Translation/0-Data/Image/data/`, `Translation/0-Data/Text/data/`, `Translation/0-Data/Audio/data/`, `Translation/0-Data/Video/data/`, `Translation/0-Data/Synthesized/Audio/data/`, `Translation/0-Data/Synthesized/Image/data/`, `Translation/0-Data/Synthesized/Text/data/`, `Translation/0-Data/Synthesized/Video/data/`, `Translation/0-Data/Image/training/checkpoints/`, `UserRecognition/0-Data/data/`, `Models/Datasets/char-dataset/`, `Models/Datasets/char-dataset-legacy/`, `Models/Datasets/font-dataset/`, `Models/Datasets/windows-fonts/`, `Models/Datasets/chat-dataset/`, `Models/OCR/checkpoints/`, `Models/Typography/checkpoints/`, `Models/UserRecognition/checkpoints/`, `font_data/`, `font-dataset/`, `windows-fonts/` — don't commit collected images, audio files, JSONL datasets, LMDB files, model checkpoints, or generated datasets.
-- **Test suite**: `pytest` tests exist under `Translation/1-Text/tests/`, `Translation/2-Image/tests/`, `Translation/3-Audio/tests/`, `Translation/4-Video/tests/`, `Prompt/tests/`, `UserRecognition/tests/`, `Models/UserRecognition/tests/`, and `tests/` (bot command parsing) — registered in `pytest.ini` under `testpaths`. Run with `pytest` from the repo root. All suites use mocks — no network calls, no model downloads. (284 tests collected; integration tests are marked `integration` and skip without `HF_TOKEN`.) `Models/OCR/` and `Models/Typography/` have no test coverage.
+- **Test suite**: `pytest` tests exist under `Translation/1-Text/tests/`, `Translation/2-Image/tests/`, `Translation/3-Audio/tests/`, `Translation/4-Video/tests/`, `Prompt/tests/`, `UserRecognition/tests/`, `Models/UserRecognition/tests/`, and `tests/` (bot command parsing) — registered in `pytest.ini` under `testpaths`. Run with `pytest` from the repo root. All suites use mocks — no network calls, no model downloads. (284 tests collected; integration tests are marked `integration` and skip without `HF_TOKEN`.) `Models/OCR/` has only `char_classifier/tests/` (run signature, label decoding, vocabulary checks); `Models/Typography/` has no test coverage.
 - **Feature package layout**: every production feature follows the same shape — inference modules at the package root, `tests/` beside them, and a `0-Data/` arm holding `training/` (`collect_*.py`, `dataset.py`, `train.py`, `deploy.py`), `testing/demo.py`, and `data/`. `Translation/`, `UserRecognition/` follow it; `Prompt/` currently has inference + tests only, with no `0-Data/` collection arm.
 - **Preprocessing variants**: All six variants are available in `ocr.py`; `preprocess()` (baseline) is the production default. Use `compare_preprocess.py` to evaluate before switching. `light_denoise` is the most consistent alternative.
 - **Public API surface**: `translate_text()` in `translate_text.py` is the public entry point; `_translate_to_english()` and `_translate_from_english()` are private implementation details.

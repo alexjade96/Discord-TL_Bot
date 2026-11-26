@@ -407,6 +407,93 @@ The legacy models score 0.60 to 0.70 on their own tiles, close to the val_acc in
 
 **Decision:** promote all three.  The clean checkpoints are the local `checkpoints/<script>/best.pt`; the legacy models are kept in `checkpoints/archive/legacy/<script>/` (and on Drive in `checkpoints/old/`).  The local kana folder still contains the legacy `last.pt` and `curves.png`; they do not belong to the promoted run and `last.pt` should not be used for `--resume`.
 
+#### Real-sample test and vocabulary gap (2026-11-25, after promotion)
+
+First run of the promoted checkpoints on real images: the 4 usable PNGs in `Translation/0-Data/Image/data/` (a fifth is solid black).  Chinese and Latin only, so kana and hangul are still untested on real images.  Ground truth was transcribed by eye; the figures count characters matched in order.
+
+| System | Chinese | Latin |
+|---|---|---|
+| Production EasyOCR (`Translation/2-Image/ocr.py`) | **17/26** | **220/229** |
+| CRAFT + manga-ocr routing (`ocr_pipeline`) | 0/26 | 68/229 |
+| CRAFT + `segment.py` + char_classifier (`compare.py`) | 1/26 | 33/229 |
+
+**Where it fails.**
+- Routing: CRAFT boxes whole lines.  manga-ocr returns invented Japanese for the longer English lines, which sends them to the cjk classifier.  A mixed Latin and Chinese line gets one script.
+- Segmentation: 0 of 5 annotated Chinese runs split into the right number of pieces.
+- Vocabulary: 3 of the characters (赢, 视, 移; 9 of 26 instances) are not classes.
+- `compare.py` decoded only Latin labels, so its CJK, kana and hangul output was raw labels (fixed, see below).
+
+**The classifier alone.**  On hand-placed glyph boxes it got 17 of 17 in-vocabulary characters.  EasyOCR matched 14 of those 17, missing the small orange name in image 3.  This is 7 distinct characters with repeats, so weak evidence.
+
+**Vocabulary gap.**  Test accuracy only measures the classes a model has.  Against standard sets built from Python's codecs:
+
+| Model | Set | Covered |
+|---|---|---|
+| cjk | GB2312 level 1 (common simplified Chinese) | 928 / 3,755 (24.7%) |
+| cjk | JIS X 0208 level 1 (common kanji) | 770 / 2,965 (26.0%) |
+| hangul | KS X 1001 syllables | 298 / 2,350 (12.7%) |
+| kana | basic hiragana and katakana | 169 / 169; the long vowel mark ー is not a class |
+
+Cause, in `render_chars.py`: `_JOYO_CPS` is described as the 2,136 Joyo kanji but has 519 entries, 321 unique, and includes a kana (U+304B).  With 150 `_CJK_FREQ_EXTRA` entries only 350 unique codepoints are listed; the other 2,650 of the 3,000 classes were filled in code order, U+4E01 to U+58B3.  `_HANGUL_FREQ_TOP` has 243 unique syllables and the rest of the 500 are also filled in code order.  Earlier wording such as "top-3000 CJK" and "top-500 hangul" describes list size, not frequency rank.
+
+The run 11 to 13 test scores are correct for their class lists.  They do not mean the models can read ordinary Chinese, Japanese or Korean.  The promotion changed nothing in the bot.  **The lists have not been rebuilt**, and a rebuild means regenerating and retraining.
+
+**Checks added so this surfaces earlier.**
+- `char_classifier/labels.py`: one label decoder, used by `ocr_pipeline.py`, `compare.py`, `vocab.py` and `eval_real.py`.  It also decodes the `punct_*` labels, which neither old decoder handled.
+- `char_classifier/vocab.py`: coverage, out-of-script, duplicate and undecodable-label report.  `render_chars_context.py` prints it before rendering (`--check-only`; `--min-coverage` aborts), and `train.py` prints it before epoch 1.  `--check-weights` compares `.pt` class lists (it flags the stale kana `last.pt`).
+- `char_classifier/eval_real.py`: staged comparison on annotated real images (vocab, boxes, segmentation, pipeline, easyocr).  It reproduced the figures above.  The annotation file is `Translation/0-Data/Image/data/eval_set.json` (gitignored).
+- `train.py` stores `vocabulary` and, when the annotation file exists, `real_boxes` in `test_report.json`.  Cloud sessions do not have the file, so only the vocabulary check runs there.
+
+#### Production EasyOCR: per-line reader choice (2026-11-25)
+
+`Translation/2-Image/ocr.py` used to keep whichever of the zh/ja/ko readers had the highest average confidence over the **whole image**.  On image 3 the Korean reader won (zh 0.7360, ja 0.7229, ko 0.7659) and on image 4 the Japanese one (0.7041, 0.7129, 0.6397), so a Chinese name was misread.  Images 1 and 2 had clear wins (gap to second 0.46 and 0.76).  It now keeps the most confident reader **per detected line**.
+
+| Test | Whole image | Per line |
+|---|---|---|
+| 4 real screenshots, Chinese | 17/26 | 26/26 |
+| 4 real screenshots, Latin | 222/229 | 224/229 |
+| Rendered zh + en | 425/432 | 423/432 |
+| Rendered ja + en | 496/500 | 496/500 |
+| Rendered ko + en | 451/472 | 452/472 |
+| Rendered, several scripts in one image | 147/224 | 217/224 |
+| All 28 rendered images | 1519/1628 (0.933) | 1588/1628 (0.975) |
+
+Latin figures here order lines top-to-bottom then left-to-right; the earlier 220/229 baseline used the old ordering.  Also measured and not adopted: always using the zh reader (0.58 to 0.64 on ja/ko mixes), 3x or 4x upscaling (helps whole-image choice, hurts per line: 24/26), dark-mode inversion (23/26 at best), no wide-box merging.
+
+**Alternatives and confidence.**  Close whole-image readings (gap ≤ 0.05) are now offered as numbered options with buttons; choices go to `data/feedback.jsonl`.  On the samples this shows several options for images 3 and 4 and for 4 of 28 rendered images.  Per line, another reader beat the chosen one on only 1 of 36 imperfect lines (116 lines checked), so errors that remain are the right reader's own (一 read as a hyphen, similar Hangul syllables).  A low-confidence warning separates poorly: below 0.7 it catches 18/36 imperfect lines and flags 15/80 good ones.
+
+**Limits.**  4 real images, Chinese and Latin only, scored against transcriptions in `eval_set.json` that nobody has verified.  The 0.05 gap was chosen after seeing those images.  The buttons were exercised with a fake Discord channel and stubbed translation, **not live**.
+
+#### Hosted inference unavailable (2026-11-25)
+
+The first live test failed at translation with `402 PrepaidCreditsRequired`.  Hugging Face removed included monthly credits for free accounts: [hub-docs commit `c708a9e`](https://github.com/huggingface/hub-docs/commit/c708a9e9fd2ba53fefc8fad13ff1a9780a838c42), dated 2026-10-07 (the docs date; no effective date or changelog entry found).  The account is free with no credit, and had earlier used under $0.01 a month.  Translation, Whisper transcription and the `/prompt` hosted fallback all returned 402; code, packages (none changed since 06-29) and token were ruled out.
+
+- Image translation replies fail entirely, so the new buttons cannot be seen, and the image is not saved for review (saving happens after translation).
+- Local route, proposed and **not done**: install `sentencepiece` (missing; `_load_local_model` swallows the error and falls back to the hosted service silently), place `opus-mt-mul-en` and `opus-mt-ko-en` in `~/.tl-bot/models/`, keep OCR results when translation fails, local Whisper later (`WHISPER_LOCAL.md`).  Other target languages need their own models.
+- `/prompt` tries Ollama first; Ollama is installed with `llama3.1` but was not running.
+- A plain `pytest` run includes integration tests that load `.env` and call the real service; use `-m "not integration"`.
+
+#### Project status: OCR work paused (2026-11-25)
+
+Paused by request to move to user recognition.  Nothing below is committed; HEAD is `67c218b`.
+
+**Uncommitted work, two separable groups.**
+1. Model-side checks: `char_classifier/{labels,vocab,eval_real}.py`, `tests/test_vocab_sync.py`, edits to `train.py`, `stats.py`, `compare.py`, `ocr_pipeline.py`, `render_chars_context.py`.
+2. Bot OCR change: `TL-Bot.py`, `ocr.py`, `translate_image.py`, `collect_image.py`, `test_ocr.py`, `test_translate.py`.
+
+`CLAUDE.md` and this file carry documentation for both.
+
+**State of the custom models.**  Kana run 11, hangul run 12 and cjk run 13 are promoted locally (legacy copies in `checkpoints/archive/legacy/`).  They are not used by the bot.  The local kana folder still holds a legacy `last.pt` that must not be resumed.
+
+**Open when resumed, in suggested order.**
+1. Restore translation (local models or credits), then try the reading buttons live.
+2. Collect real screenshots, including Japanese and Korean, and verify `eval_set.json`.
+3. Choose the route for the custom models: improve EasyOCR only, classifier as a fallback beside it (needs per-character boxes, untested), or full replacement (needs new routing and segmentation).  Shadow-mode comparison with user feedback was also proposed.
+4. Only then rebuild character lists (cjk: GB2312 level 1 ∪ JIS level 1 = 5,009 classes; hangul: KS X 1001 = 2,350; kana: add ー) and run the gated pilots: speed (0 vs 4 loader workers), data budget (current cjk list, 56 tiles/class, 10 epochs, top-1 ≥ 0.99), hangul 2,350 (62 tiles/class, 12 epochs, ≥ 0.99), cjk 5,009 (56 tiles/class, 8 epochs, ≥ 0.98).  About 17 to 20 GPU hours estimated at 16 ms per training tile.  Use a distinct `--dataset-name` so the promoted folders are not archived.  `remote_train.py` cannot yet pass `--max-per-class` or `--num-workers`.
+5. Smaller items: error handling gaps in `eval_real.py` (empty run text, missing `best.pt`), silently skipped empty class folders, per-face seeding for duplicate tiles, a Traditional Chinese reader, a hyphen-to-一 correction (check on real text first).
+
+Claude as an OCR reviewer was considered and dropped.  Experiment scripts and logs from this session were kept only in a temporary scratch directory; `eval_real.py` reproduces the real-sample figures.
+
 ### Remaining items after run 7
 
 - **Generate + train kana/hangul/cjk real-context data.** Done: runs 11, 12 and 13 (see above); the text below is the original plan. `render_chars_context.py --scripts kana hangul cjk --extra-fonts-dir ../../Datasets/google-fonts` into `char-dataset/`, check per-class counts, zip the all-scripts `char-dataset/`, replace `char-dataset.zip` on Drive, then run the three trainings on Colab (`--scheduler cosine-warm`, ~30-40 epochs). Record results here.
