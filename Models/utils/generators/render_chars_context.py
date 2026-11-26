@@ -33,6 +33,7 @@ Run from Models/utils/generators/ (writes into ../../Datasets/):
 """
 import argparse
 import random
+import sys
 import zlib
 from pathlib import Path
 
@@ -45,7 +46,10 @@ from render_chars import (
     copy_system_fonts, collect_extra_fonts, build_font_meta,
 )
 
-_HERE            = Path(__file__).parent.parent.parent / 'Datasets'  # Models/Datasets/
+sys.path.append(str(Path(__file__).parent.parent.parent / 'OCR' / 'char_classifier'))
+from vocab import DEFAULT_WARN_BELOW, failures, format_reports, vocab_reports  # noqa: E402
+
+_HERE           = Path(__file__).parent.parent.parent / 'Datasets'  # Models/Datasets/
 
 TILE_SIZE       = 128   # on-disk tile size -- matches render_chars.py's convention;
                         # data.py's transforms resize to the model's 224 input at train time
@@ -244,6 +248,12 @@ def main():
     p.add_argument('--cjk-top', type=int, default=3000, metavar='N')
     p.add_argument('--extra-fonts-dir', nargs='+', default=[], metavar='DIR')
     p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--min-coverage', type=float, default=None,
+                   help='Abort before rendering if a class list covers less than this share '
+                        '(0-1) of what its size could cover of the standard character sets '
+                        '(see char_classifier/vocab.py). Default: warn only.')
+    p.add_argument('--check-only', action='store_true',
+                   help='Print the vocabulary report and exit without rendering')
     p.add_argument('--tile-size', type=int, default=TILE_SIZE,
                    help=f'On-disk tile size in pixels (default {TILE_SIZE}). PNG byte size '
                         'scales with pixel count for this content -- 96px is ~25% smaller, '
@@ -279,6 +289,20 @@ def main():
     print(f'[render_chars_context] scripts={scripts}  render_pt={RENDER_SIZE_PT}  '
           f'variants_per_slot={args.variants_per_slot}  tile_size={args.tile_size}  '
           f'out={out_root}  update={args.update}')
+
+    # Check the class lists before spending hours rendering and days training.
+    problems = []
+    for _, charset in jobs:
+        reports = vocab_reports([label for label, _ in charset])
+        for line in format_reports(reports, args.min_coverage or DEFAULT_WARN_BELOW):
+            print(line)
+        if args.min_coverage is not None:
+            problems += failures(reports, args.min_coverage)
+    if problems:
+        sys.exit(f'[render_chars_context] {len(problems)} vocabulary problem(s) with '
+                 f'--min-coverage {args.min_coverage}; nothing rendered.')
+    if args.check_only:
+        return
 
     fonts_root = copy_system_fonts()
     import os

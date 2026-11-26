@@ -31,6 +31,7 @@ from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, str(Path(__file__).parent))
 
 import ocr_pipeline
+from char_classifier.labels import label_to_char as _label_to_char
 from char_classifier.segment import split_into_chars
 
 _HERE      = Path(__file__).parent
@@ -86,24 +87,9 @@ _eval_tf = None
 def _get_eval_tf():
     global _eval_tf
     if _eval_tf is None:
-        from torchvision import transforms
-        _eval_tf = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
+        from char_classifier.data import get_transforms
+        _eval_tf = get_transforms('none', grid_mode='none')[1]
     return _eval_tf
-
-
-def _label_to_char(label: str) -> str:
-    """Convert a class label ('cap_A', 'low_z', 'dig_3') to its plain character."""
-    if label.startswith('cap_'):
-        return label[4:].upper()
-    if label.startswith('low_'):
-        return label[4:].lower()
-    if label.startswith('dig_'):
-        return label[4:]
-    return label  # '?' or unknown
 
 
 def _classify_crop(crop: Image.Image, script: str, top_k: int = 3) -> list[tuple[str, float]]:

@@ -46,7 +46,8 @@ def plot_curves(results: Dict[str, List], save_path: str = None):
 
 
 def print_report(model, loader, class_names: list, device, top_confused: int = 10,
-                 save_path=None):
+                 save_path=None, extra: dict = None):
+    """extra: additional top-level keys to store in the saved JSON report."""
     model.eval()
     all_logits, all_preds, all_labels = [], [], []
     with torch.inference_mode():
@@ -101,5 +102,6 @@ def print_report(model, loader, class_names: list, device, top_confused: int = 1
                 {'true': t, 'pred': p, 'count': int(c)}
                 for c, t, p in pairs[:max(top_confused, 50)]
             ],
+            **(extra or {}),
         }, indent=2))
         print(f'[stats] Test report saved to {save_path}')

@@ -22,6 +22,7 @@ if __package__:
     from .stats         import plot_curves, print_report
     from .utils         import (get_device, load_checkpoint, peek_checkpoint_epoch,
                                 save_checkpoint, set_seed)
+    from .vocab         import format_reports, vocab_reports
 else:
     from data          import get_dataloaders
     from engine        import train_loop
@@ -30,6 +31,7 @@ else:
     from stats         import plot_curves, print_report
     from utils         import (get_device, load_checkpoint, peek_checkpoint_epoch,
                                save_checkpoint, set_seed)
+    from vocab         import format_reports, vocab_reports
 
 
 _HERE          = Path(__file__).parent
@@ -387,6 +389,36 @@ def _create_model_with_fallback(backbone: str, num_classes: int, resuming: bool)
                             pretrained=False)
 
 
+def _real_world_checks(model, class_names: list, scripts, device) -> dict:
+    """Extra test_report.json keys: vocabulary coverage, plus accuracy on real
+    glyph boxes when the (gitignored) annotation file is present.  Never raises:
+    it runs after a long training job and must not cost the test report."""
+    extra = {}
+    try:
+        extra['vocabulary'] = vocab_reports(class_names)
+        for line in format_reports(extra['vocabulary']):
+            print(line)
+        if __package__:
+            from .eval_real import DEFAULT_SET, load_set, score_boxes
+        else:
+            from eval_real import DEFAULT_SET, load_set, score_boxes
+        if not DEFAULT_SET.exists():
+            print('[train] No real-sample annotation file; real-box check skipped '
+                  '(run char_classifier.eval_real where it exists before promoting).')
+            return extra
+        real = score_boxes(model, class_names, list(scripts), load_set(DEFAULT_SET), device)
+        extra['real_boxes'] = real
+        if not real['chars']:
+            print(f'[train] Real-sample annotations have no {"+".join(scripts)} runs; '
+                  f'nothing verified on real images.')
+            return extra
+        print(f'[train] Real glyph boxes: {real["correct"]}/{real["in_vocab"]} in-vocab '
+              f'correct, {real["chars"] - real["in_vocab"]} of {real["chars"]} out of vocabulary')
+    except Exception as e:
+        print(f'[train] Warning: real-world checks failed ({type(e).__name__}: {ascii(str(e))})')
+    return extra
+
+
 def main():
     args = parse_args()
     set_seed(args.seed)
@@ -448,6 +480,9 @@ def main():
         min_per_class=args.min_per_class,
     )
     json.dump(class_names, open(ckpt_dir / 'class_names.json', 'w'), indent=2)
+    # Shown before the first epoch: test accuracy cannot reveal a missing class.
+    for line in format_reports(vocab_reports(class_names)):
+        print(line)
 
     freeze_epochs = min(args.freeze_epochs, args.epochs)
     fine_epochs   = args.epochs - freeze_epochs
@@ -736,7 +771,8 @@ def main():
     else:
         print('[train] No best.pt - evaluating the final-epoch model on test set ...')
     print_report(model, test_loader, class_names, device,
-                 save_path=ckpt_dir / 'test_report.json')
+                 save_path=ckpt_dir / 'test_report.json',
+                 extra=_real_world_checks(model, class_names, scripts, device))
     plot_curves(all_results, save_path=str(ckpt_dir / 'curves.png'))
 
 

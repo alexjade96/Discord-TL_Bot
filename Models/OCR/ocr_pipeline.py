@@ -38,6 +38,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 from detection.craft_detector import detect, detect_and_crop
+from char_classifier.labels import label_to_char as _label_to_char
 
 # ---------------------------------------------------------------------------
 # Script detection patterns (Unicode ranges, checked on decoded text strings)
@@ -202,27 +203,6 @@ def _load_char_clf(script: str, device=None):
 # char_classifier helpers
 # ---------------------------------------------------------------------------
 
-def _label_to_char(label: str) -> str:
-    """
-    Convert a char_classifier class label to its Unicode character.
-
-    Latin dataset uses prefix_char notation:
-        cap_A → 'A',  low_a → 'a',  dig_0 → '0'
-    All other scripts use prefix_HHHH hex codepoints:
-        hira_304a → chr(0x304a),  kata_30ab → chr(0x30ab),  cjk_4e00 → chr(0x4e00)
-    """
-    parts = label.split('_', 1)
-    if len(parts) < 2:
-        return label
-    prefix, rest = parts
-    if prefix in ('cap', 'low', 'dig'):
-        return rest
-    try:
-        return chr(int(rest, 16))
-    except ValueError:
-        return label
-
-
 def _run_char_clf_word(
     crop: Image.Image,
     script: str,
@@ -234,18 +214,14 @@ def _run_char_clf_word(
     Returns (text, avg_confidence).  Returns ('', 0.0) if checkpoint is absent.
     """
     import torch
-    from torchvision import transforms
+    from char_classifier.data import get_transforms
     from char_classifier.segment import split_into_chars
 
     clf, names = _load_char_clf(script, device)
     if clf is None:
         return '', 0.0
 
-    tf = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
+    tf = get_transforms('none', grid_mode='none')[1]
 
     char_crops = split_into_chars(crop.convert('RGB'))
     if not char_crops:
@@ -378,7 +354,7 @@ def recognize_char(
     Falls back to recognize_crop() if char_classifier checkpoint is absent.
     """
     import torch
-    from torchvision import transforms
+    from char_classifier.data import get_transforms
 
     clf, names = _load_char_clf(script, device)
     if clf is None:
@@ -386,11 +362,7 @@ def recognize_char(
         r = recognize_crop(crop)
         return [(r.text, r.confidence)]
 
-    tf = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
+    tf = get_transforms('none', grid_mode='none')[1]
     tensor = tf(crop.convert('RGB')).unsqueeze(0)
     if device:
         tensor = tensor.to(device)
